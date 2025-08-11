@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>問天 · ZC 元始境</title>
+  <style>
+    :root { --bg:#0B0F14; --accent:#D4AF37; --text:#F5F7FA; --radius:24px; }
+    html,body { margin:0; height:100%; }
+    body { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans TC", Arial; }
+    header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom: 1px solid rgba(212,175,55,.25); }
+    .pill { border:1px solid rgba(212,175,55,.6); border-radius:999px; padding:2px 8px; font-size:12px; }
+    main { display:flex; flex-direction:column; height: calc(100% - 52px); }
+    .tabs { display:flex; gap:8px; padding:8px 12px; border-bottom: 1px solid rgba(212,175,55,.15); }
+    .tab { opacity:.7; padding:6px 10px; border-radius:10px; border:1px solid transparent; }
+    .tab.active { opacity:1; border-color: rgba(212,175,55,.35); }
+    .chat { flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; }
+    .bubble { max-width: 85%; padding:10px 12px; border-radius: var(--radius); margin:6px 0; }
+    .user { background:#1E2F4A; align-self:flex-end; }
+    .bot { background:#153821; align-self:flex-start; }
+    .controls { display:flex; gap:8px; padding:10px; border-top: 1px solid rgba(212,175,55,.15); }
+    input, button, select { border-radius:12px; border:1px solid rgba(212,175,55,.25); background: transparent; color: var(--text); padding:10px; }
+    button { background: rgba(212,175,55,.12); }
+    .bar { display:flex; gap:8px; align-items:center; padding:6px 12px; flex-wrap:wrap; }
+    .stat { font-size:12px; opacity:.85; }
+    .drawer { position: fixed; right: 10px; bottom: 68px; display:flex; gap:8px; flex-direction:column; }
+    .drawer button { background: rgba(212,175,55,.08); }
+    @media (max-width:600px){ .chat { padding-bottom: 90px; } }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>問天 · ZC 元始境</strong>
+    <span id="health" class="pill">checking…</span>
+  </header>
+
+  <div class="tabs">
+    <div class="tab active" data-core="deepseek">DeepSeek</div>
+    <div class="tab" data-core="gemini">Gemini</div>
+    <div class="tab" data-core="gpt4o">4o</div>
+    <div class="tab" data-core="grok">Grok</div>
+  </div>
+
+  <div class="bar">
+    <label>風格</label>
+    <select id="styleSel"></select>
+    <label>語風</label>
+    <select id="voiceSel"></select>
+    <span class="stat" id="budget">$ -- / this round · 等級 --</span>
+  </div>
+
+  <main>
+    <div id="chat" class="chat"></div>
+    <div class="controls">
+      <input id="prompt" placeholder="⌘ 指令/問句…" style="flex:1" />
+      <button id="send">送出</button>
+      <button id="save">保存</button>
+    </div>
+  </main>
+
+  <div class="drawer">
+    <button onclick="openQuick('project')">專案</button>
+    <button onclick="openQuick('strategy')">富策體</button>
+    <button onclick="openQuick('intel')">灰情報</button>
+    <button onclick="openQuick('oversight')">監察院</button>
+    <button onclick="openQuick('legal')">法務</button>
+    <button onclick="openQuick('settings')">設定</button>
+  </div>
+
+  <script>
+    const $ = (q)=>document.querySelector(q);
+    const chat = $("#chat");
+    const styleSel = $("#styleSel");
+    const voiceSel = $("#voiceSel");
+    const budget = $("#budget");
+    let core = "deepseek";
+    let cfg = { api: "/api/ask_tian", style: "gu-tech", voice: "掌門令", tzOffsetMin: new Date().getTimezoneOffset()*-1 };
+
+    function addBubble(text, who="bot"){
+      const b = document.createElement("div");
+      b.className = "bubble " + (who==="user"?"user":"bot");
+      b.textContent = text;
+      chat.appendChild(b);
+      chat.scrollTop = chat.scrollHeight;
+    }
+
+    async function loadPacks(){
+      const styles = ["gu-tech","plain-light","dark-neutral"];
+      const voices = ["掌門令","工務札記","行銷簡報","安撫客服","技術決策"];
+      styleSel.innerHTML = styles.map(s=>`<option value="${s}">${s}</option>`).join("");
+      voiceSel.innerHTML = voices.map(v=>`<option value="${v}">${v}</option>`).join("");
+      styleSel.value = cfg.style; voiceSel.value = cfg.voice;
+      applyStyle(cfg.style);
+    }
+
+    async function applyStyle(id){
+      const r = await fetch(`/public/stylepacks/${id}.json`); const s = await r.json();
+      document.documentElement.style.setProperty('--bg', s.bg);
+      document.documentElement.style.setProperty('--accent', s.accent);
+      document.documentElement.style.setProperty('--text', s.text || '#F5F7FA');
+      document.documentElement.style.setProperty('--radius', (s.radius||24)+'px');
+    }
+
+    async function ping(){
+      try{
+        const r = await fetch(cfg.api, { method:"GET", cache:"no-store" });
+        $("#health").textContent = r.ok ? "OK" : "FAIL";
+      }catch{ $("#health").textContent = "FAIL"; }
+    }
+
+    function bindTabs(){
+      document.querySelectorAll(".tab").forEach(el=>{
+        el.onclick = ()=>{
+          document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
+          el.classList.add("active");
+          core = el.dataset.core;
+          addBubble(`已切換核心：${core}`,"bot");
+        }
+      });
+    }
+
+    async function send(){
+      const p = $("#prompt").value.trim();
+      if(!p) return;
+      addBubble(p,"user");
+      $("#prompt").value = "";
+      const payload = { intent: p, priority:"high", tzOffsetMin: cfg.tzOffsetMin, voice: voiceSel.value };
+      try{
+        const r = await fetch(cfg.api, { method:"POST", headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+        const j = await r.json();
+        if (r.status===202) {
+          addBubble(`已排入離峰處理（等級 ${j.level}，預估$${(j.estimate_usd||0).toFixed(4)}）`);
+          return;
+        }
+        if (!j.ok) throw new Error(j.error || "fail");
+        addBubble(j.answer || "[空回應]");
+        budget.textContent = `$${(j.estimate_usd||0).toFixed(4)} / this round · 等級 ${j.level}`;
+      }catch(e){
+        addBubble(`[錯誤] ${e.message}`);
+      }
+    }
+
+    $("#send").onclick = send;
+    $("#prompt").addEventListener('keydown', (e)=>{ if(e.key==='Enter') send(); });
+    styleSel.onchange = ()=>{ cfg.style = styleSel.value; applyStyle(cfg.style); };
+    voiceSel.onchange = ()=>{ cfg.voice = voiceSel.value; };
+
+    function openQuick(which){ addBubble(`開啟 ${which} 面板（占位）`); }
+    loadPacks(); bindTabs(); ping();
+  </script>
+</body>
+</html>

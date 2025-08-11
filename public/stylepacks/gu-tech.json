@@ -1,0 +1,13 @@
+{
+  "id": "gu-tech",
+  "bg": "#0B0F14",
+  "accent": "#D4AF37",
+  "text": "#F5F7FA",
+  "radius": 24,
+  "shadow": "xs",
+  "motion": "fade08",
+  "bubble": {
+    "user": "#1E2F4A",
+    "bot": "#153821"
+  }
+}

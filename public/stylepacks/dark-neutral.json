@@ -1,0 +1,13 @@
+{
+  "id": "dark-neutral",
+  "bg": "#111418",
+  "accent": "#19A7A8",
+  "text": "#E8EDEF",
+  "radius": 16,
+  "shadow": "sm",
+  "motion": "fade08",
+  "bubble": {
+    "user": "#1A2430",
+    "bot": "#142821"
+  }
+}

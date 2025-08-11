@@ -1,0 +1,13 @@
+{
+  "id": "plain-light",
+  "bg": "#FAFAF9",
+  "accent": "#222222",
+  "text": "#222222",
+  "radius": 12,
+  "shadow": "none",
+  "motion": "none",
+  "bubble": {
+    "user": "#E8EEF8",
+    "bot": "#EAF6EC"
+  }
+}
