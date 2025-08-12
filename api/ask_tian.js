@@ -39,6 +39,12 @@ async function sbGetMessages(sid, limit=8) {
   return await r.json();
 }
 async function sbInsert(table, row) {
+  // ---- PATCH A: upsert to config_kv ----
+async function sbPutKV(key, value) {
+  await sbFetch(`/config_kv?key=eq.${encodeURIComponent(key)}`, { method:'DELETE' });
+  return await sbInsert('config_kv', { key, value });
+}
+
   const r = await sbFetch(`/${table}`, { method:'POST', body: row });
   if (!r.ok) return { ok:false, status:r.status, detail: await r.text().catch(()=> '') };
   const data = await r.json().catch(()=> ({}));
@@ -155,7 +161,130 @@ if (submitWords.some(w => intentNorm.includes(w))) {
   });
 }
 
+// ---- PATCH B: default blueprint & upgraded checklist (auto seed) ----
+const DEFAULT_BLUEPRINT = {
+  styles: [
+    { code:'gu-tech', name:'古風×科技', css:{ accent:'#D4AF37', bg:'#0B0F14' }, notes:'黑底金線·0.8s進場·圓角大按鈕' },
+    { code:'plain',   name:'極簡',     css:{ accent:'#9aa7b4', bg:'#0B0F14' } }
+  ],
+  voices: [
+    { code:'zhangmen', name:'掌門令', system:'你是冷靜斷語的決策助手，回答短、條列化、少婉轉，不用Emoji。' },
+    { code:'opslog',   name:'工務札記', system:'分段輸出：現況/風險/建議/行動；重點條列，數據為先。' },
+    { code:'warm',     name:'溫柔說', system:'語氣溫和，先結論後解釋，必要時舉例。' }
+  ],
+  modules: [
+    { code:'entry', name:'入口·問天', endpoint:'/index.html',              enabled:true  },
+    { code:'audit', name:'監察院',     endpoint:'/api/metrics_summary',     enabled:true  },
+    { code:'grey',  name:'灰情報',     endpoint:'/api/grey_intel_ingest',   enabled:true  },
+    { code:'legal', name:'法務組',     endpoint:'/api/legal',               enabled:false },
+    { code:'proj',  name:'專案模組',   endpoint:'/api/projects',            enabled:false },
+    { code:'rich',  name:'富策體',     endpoint:'/api/rich_core',           enabled:false }
+  ],
+  policy: {
+    daily_budget_usd: 2.0,
+    offpeak_hours: '23:00-06:00 Asia/Taipei',
+    realtime_route: ['gpt4o','gemini','grok'],
+    offline_route:  ['deepseek','gpt4o'],
+    lifeline: { L1:0.02, L2:0.05, L3:0.10, L4:0.20, L5:1.00 }
+  },
+  triggers: {
+    boot: ['元始開工','開工','元始啟動','開始施工','開始'],
+    submit_blueprint: ['元始交卷','交付藍圖','交卷']
+  },
+  kpi: [
+    { code:'speed',         name:'回應速度',     formula:'p95_latency_ms',          phase:'全域' },
+    { code:'cost_per_ans',  name:'每答成本',     formula:'estimate_usd/answers',    phase:'全域' },
+    { code:'correction_rate',name:'拉歪修正率',  formula:'corrective_proposals/total_proposals', phase:'監察' }
+  ]
+};
+
+async function seedBlueprintIfEmpty() {
+  const ping = await sbFetch('/config_kv?select=key&limit=1');
+  if (!ping.ok) return { ok:false, why:'missing_table' };
+
+  const src = DEFAULT_BLUEPRINT;
+  const mapping = {
+    style_profiles: src.styles,
+    voice_profiles: src.voices,
+    modules:       src.modules,
+    policy:        src.policy,
+    triggers:      src.triggers,
+    kpi_rules:     src.kpi
+  };
+  const keys = Object.keys(mapping);
+  let seeded = 0, details = [];
+
+  for (const k of keys) {
+    const r = await sbFetch(`/config_kv?key=eq.${encodeURIComponent(k)}&select=key&limit=1`);
+    const a = r.ok ? await r.json() : [];
+    if (!Array.isArray(a) || a.length === 0) {
+      await sbPutKV(k, mapping[k]).catch(()=>{});
+      seeded++; details.push(k);
+    }
+  }
+  return { ok:true, seeded, details };
+}
+
 async function runUpgradeChecklist() {
+  const env = {
+    openai: !!process.env.OPENAI_API_KEY,
+    gemini: !!process.env.GEMINI_API_KEY,
+    grok:   !!process.env.GROK_API_KEY,
+    supabase_url: !!process.env.SUPABASE_URL,
+    supabase_key: !!process.env.SUPABASE_SERVICE_ROLE
+  };
+
+  let sbMessages='ok', sbRouting='ok', sbKV='ok';
+  try { const r1 = await sbFetch('/messages?select=id&limit=1'); if(!r1.ok) sbMessages='missing'; } catch { sbMessages='missing'; }
+  try { const r2 = await sbFetch('/routing_events?select=id&limit=1'); if(!r2.ok) sbRouting='missing'; } catch { sbRouting='missing'; }
+  try { const r3 = await sbFetch('/config_kv?select=key&limit=1'); if(!r3.ok) sbKV='missing'; } catch { sbKV='missing'; }
+
+  const needSQL = (sbMessages==='missing' || sbRouting==='missing' || sbKV==='missing');
+  const sql = needSQL ? `
+create table if not exists sessions(
+  id uuid primary key default gen_random_uuid(),
+  sid text unique not null,
+  created_at timestamptz default now()
+);
+create table if not exists messages(
+  id bigserial primary key,
+  sid text not null,
+  role text not null check (role in ('user','assistant','system')),
+  content text not null,
+  created_at timestamptz default now()
+);
+create table if not exists routing_events(
+  id bigserial primary key,
+  sid text not null,
+  core text not null,
+  estimate_usd numeric(10,5),
+  level text,
+  created_at timestamptz default now()
+);
+create table if not exists config_kv(
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz default now()
+);`.trim() : '';
+
+  // 若表都在，順便自動 seed 預設藍圖（只在空的時候）
+  let seed = { ok:false, seeded:0, details:[] };
+  if (!needSQL) seed = await seedBlueprintIfEmpty();
+
+  const tips = [
+    '① Production 網域使用固定 sid；換網域會是新 sid（記憶會分開）。',
+    '② 金鑰放 Production；DeepSeek 需搭配 OPENAI_BASE_URL=https://api.deepseek.com。',
+    '③ 長聊自動帶入最近 8 句；監察院統計 routing_events。',
+    '④ 一鍵升級已自動灌入預設藍圖（若資料庫為空）。'
+  ];
+
+  return {
+    env,
+    tables:{ messages:sbMessages, routing_events:sbRouting, config_kv:sbKV },
+    needSQL, sql, seed, tips
+  };
+}
+ {
   const env = {
     openai: !!process.env.OPENAI_API_KEY,
     gemini: !!process.env.GEMINI_API_KEY,
