@@ -1,0 +1,9 @@
+{
+  "name": "問天 · ZC 元始境",
+  "short_name": "問天",
+  "start_url": "/index.html",
+  "display": "standalone",
+  "background_color": "#0B0F14",
+  "theme_color": "#0B0F14",
+  "icons": []
+}
