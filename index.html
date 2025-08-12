@@ -1,152 +1,236 @@
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>問天 · ZC 元始境</title>
-  <style>
-    :root { --bg:#0B0F14; --accent:#D4AF37; --text:#F5F7FA; --radius:24px; }
-    html,body { margin:0; height:100%; }
-    body { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans TC", Arial; }
-    header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom: 1px solid rgba(212,175,55,.25); }
-    .pill { border:1px solid rgba(212,175,55,.6); border-radius:999px; padding:2px 8px; font-size:12px; }
-    main { display:flex; flex-direction:column; height: calc(100% - 52px); }
-    .tabs { display:flex; gap:8px; padding:8px 12px; border-bottom: 1px solid rgba(212,175,55,.15); }
-    .tab { opacity:.7; padding:6px 10px; border-radius:10px; border:1px solid transparent; }
-    .tab.active { opacity:1; border-color: rgba(212,175,55,.35); }
-    .chat { flex:1; overflow:auto; padding:12px; display:flex; flex-direction:column; }
-    .bubble { max-width: 85%; padding:10px 12px; border-radius: var(--radius); margin:6px 0; }
-    .user { background:#1E2F4A; align-self:flex-end; }
-    .bot { background:#153821; align-self:flex-start; }
-    .controls { display:flex; gap:8px; padding:10px; border-top: 1px solid rgba(212,175,55,.15); }
-    input, button, select { border-radius:12px; border:1px solid rgba(212,175,55,.25); background: transparent; color: var(--text); padding:10px; }
-    button { background: rgba(212,175,55,.12); }
-    .bar { display:flex; gap:8px; align-items:center; padding:6px 12px; flex-wrap:wrap; }
-    .stat { font-size:12px; opacity:.85; }
-    .drawer { position: fixed; right: 10px; bottom: 68px; display:flex; gap:8px; flex-direction:column; }
-    .drawer button { background: rgba(212,175,55,.08); }
-    @media (max-width:600px){ .chat { padding-bottom: 90px; } }
-  </style>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>問天 · ZC 元始境</title>
+<link rel="manifest" href="/public/manifest.json">
+<meta name="theme-color" content="#0B0F14">
+<style>
+:root{
+  --bg:#0B0F14; --panel:#0e1218; --line:#1b2533; --accent:#D4AF37; --accent2:#F5F7FA; --muted:#9aa7b4;
+  --radius:24px; --shadow:0 8px 24px rgba(0,0,0,.35); --speed:.8s;
+}
+*{box-sizing:border-box} html,body{height:100%; margin:0; background:var(--bg); color:var(--accent2); font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Noto Sans TC","Segoe UI",Roboto;}
+header{position:sticky; top:0; z-index:30; background:linear-gradient(180deg, rgba(11,15,20,.92), rgba(11,15,20,.7) 60%, transparent); backdrop-filter: blur(6px);}
+.header-inner{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px clamp(12px,4vw,24px); border-bottom:1px solid rgba(212,175,55,.18)}
+.title{display:flex; align-items:center; gap:12px; font-weight:700; letter-spacing:.2em}
+.title b{color:var(--accent)}
+.badge{display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border:1px solid rgba(212,175,55,.35); border-radius:999px; font-size:12px; color:var(--accent2)}
+.core-tabs{display:flex; gap:10px; padding:8px clamp(12px,4vw,24px) 0}
+.tab{padding:8px 14px; border:1px solid rgba(212,175,55,.35); border-radius:999px; color:var(--accent2); cursor:pointer; user-select:none; transition:all .2s}
+.tab.active{background:rgba(212,175,55,.1); box-shadow: inset 0 0 0 1px rgba(212,175,55,.45)}
+.controls{display:flex; gap:8px; flex-wrap:wrap; padding:8px clamp(12px,4vw,24px)}
+select{appearance:none; background:#0f141d; border:1px solid var(--line); border-radius:12px; color:var(--accent2); padding:10px 12px; min-width:120px}
+.main{display:grid; grid-template-columns:1fr auto; gap:12px; padding:8px clamp(12px,4vw,24px) 96px}
+@media (max-width:960px){ .main{grid-template-columns:1fr} }
+.chat{min-height:58vh; display:flex; flex-direction:column; gap:12px; padding:8px 0 120px}
+.msg{max-width:min(92%,720px); border:1px solid #1a2430; border-radius:18px; padding:10px 14px; background:#0f141d; box-shadow:var(--shadow); animation:fade var(--speed) ease 1}
+.msg.me{margin-left:auto; border-color:rgba(212,175,55,.25); background:linear-gradient(180deg,#0f141d,#0c1319)}
+.msg.sys{background:linear-gradient(180deg,#0f1a13,#0c1912); border-color:#204d33; color:#d1fae5}
+@keyframes fade{from{opacity:0; transform:translateY(8px)} to{opacity:1; transform:none)}
+.sidebar{position:sticky; top:74px; display:flex; flex-direction:column; gap:12px}
+.sidebtn{padding:12px 16px; border:1px solid rgba(212,175,55,.25); border-radius:18px; background:transparent; color:var(--accent2); cursor:pointer}
+.sidebtn:hover{background:rgba(212,175,55,.08)}
+.drawer{position:fixed; inset:auto 0 0 auto; top:0; width:min(520px,92vw); background:#0c1016; border-left:1px solid #1a2430; box-shadow: -16px 0 40px rgba(0,0,0,.5); transform:translateX(100%); transition:transform .35s ease; z-index:40}
+.drawer.open{transform:translateX(0)}
+.drawer header{display:flex; justify-content:space-between; align-items:center; padding:14px 18px; border-bottom:1px solid #1a2430}
+.drawer .body{padding:16px 18px; max-height:calc(100dvh - 62px); overflow:auto}
+.kpi{display:flex; align-items:center; gap:10px; padding:6px 12px; border:1px dashed rgba(212,175,55,.35); border-radius:12px; color:var(--accent)}
+.footer{position:fixed; left:0; right:0; bottom:0; background:linear-gradient(0deg, rgba(11,15,20,.95), rgba(11,15,20,.7) 55%, transparent); backdrop-filter: blur(6px); padding:10px clamp(12px,4vw,24px); z-index:50; border-top:1px solid rgba(212,175,55,.18)}
+.inputbar{display:flex; gap:10px}
+textarea{flex:1; resize:none; min-height:42px; max-height:120px; border-radius:14px; padding:12px; background:#0f141d; color:var(--accent2); border:1px solid #1a2430}
+.btn{padding:10px 14px; border-radius:14px; border:1px solid rgba(212,175,55,.35); color:var(--accent2); background:transparent; cursor:pointer}
+.btn.primary{background:linear-gradient(180deg, rgba(212,175,55,.18), rgba(212,175,55,.08));}
+.small{font-size:12px; color:#9aa7b4}
+</style>
 </head>
 <body>
-  <header>
-    <strong>問天 · ZC 元始境</strong>
-    <span id="health" class="pill">checking…</span>
-  </header>
-
-  <div class="tabs">
-    <div class="tab active" data-core="deepseek">DeepSeek</div>
+<header>
+  <div class="header-inner">
+    <div class="title"><b>問天</b>· ZC 元始境</div>
+    <div class="badges">
+      <span class="badge">Taichung City <span id="clock">--:--</span></span>
+      <span class="badge">core: <span id="coreLabel" style="color:#D4AF37">gpt4o</span></span>
+      <span class="badge">$ <span id="cost">0.0000</span> / this round · 等級 <span id="level">--</span></span>
+      <span class="badge" id="health">OK</span>
+    </div>
+  </div>
+  <div class="core-tabs">
+    <div class="tab active" data-core="gpt4o">4o</div>
+    <div class="tab" data-core="deepseek">DeepSeek</div>
     <div class="tab" data-core="gemini">Gemini</div>
-    <div class="tab" data-core="gpt4o">4o</div>
     <div class="tab" data-core="grok">Grok</div>
   </div>
-
-  <div class="bar">
-    <label>風格</label>
-    <select id="styleSel"></select>
-    <label>語風</label>
-    <select id="voiceSel"></select>
-    <span class="stat" id="budget">$ -- / this round · 等級 --</span>
+  <div class="controls">
+    <label>風格
+      <select id="styleSel">
+        <option value="gu-tech">gu-tech（古風×科技）</option>
+        <option value="plain">plain（極簡）</option>
+      </select>
+    </label>
+    <label>語風
+      <select id="voiceSel">
+        <option>掌門令</option>
+        <option>工務札記</option>
+        <option>溫柔說</option>
+      </select>
+    </label>
+    <button class="btn" id="upgradeBtn">一鍵升級</button>
   </div>
+</header>
 
-  <main>
-    <div id="chat" class="chat"></div>
-    <div class="controls">
-      <input id="prompt" placeholder="⌘ 指令/問句…" style="flex:1" />
-      <button id="send">送出</button>
-      <button id="save">保存</button>
-    </div>
-  </main>
+<main class="main">
+  <section class="chat" id="chat"></section>
 
-  <div class="drawer">
-    <button onclick="openQuick('project')">專案</button>
-    <button onclick="openQuick('strategy')">富策體</button>
-    <button onclick="openQuick('intel')">灰情報</button>
-    <button onclick="openQuick('oversight')">監察院</button>
-    <button onclick="openQuick('legal')">法務</button>
-    <button onclick="openQuick('settings')">設定</button>
+  <aside class="sidebar">
+    <button class="sidebtn" data-drawer="proj">專案</button>
+    <button class="sidebtn" data-drawer="rich">富策體</button>
+    <button class="sidebtn" data-drawer="grey">灰情報</button>
+    <button class="sidebtn" data-drawer="audit">監察院</button>
+    <button class="sidebtn" data-drawer="legal">法務</button>
+    <button class="sidebtn" data-drawer="settings">設定</button>
+  </aside>
+</main>
+
+<div class="drawer" id="drawer">
+  <header><b id="drawerTitle">面板</b><button class="btn" id="closeDrawer">關閉</button></header>
+  <div class="body" id="drawerBody"></div>
+</div>
+
+<footer class="footer">
+  <div class="inputbar">
+    <textarea id="input" placeholder="✐ 指令/問句…（或輸入：元始開工）" rows="1"></textarea>
+    <button class="btn" id="saveBtn">保存</button>
+    <button class="btn primary" id="sendBtn">送出</button>
   </div>
+  <div class="small" id="hint"></div>
+</footer>
 
-  <script>
-    const $ = (q)=>document.querySelector(q);
-    const chat = $("#chat");
-    const styleSel = $("#styleSel");
-    const voiceSel = $("#voiceSel");
-    const budget = $("#budget");
-    let core = "deepseek";
-    let cfg = { api: "/api/ask_tian", style: "gu-tech", voice: "掌門令", tzOffsetMin: new Date().getTimezoneOffset()*-1 };
+<script>
+const $ = s=>document.querySelector(s);
+const chat = $('#chat');
+const styleSel = $('#styleSel');
+const voiceSel = $('#voiceSel');
+const coreLabel = $('#coreLabel');
+let core = 'gpt4o';
 
-    function addBubble(text, who="bot"){
-      const b = document.createElement("div");
-      b.className = "bubble " + (who==="user"?"user":"bot");
-      b.textContent = text;
-      chat.appendChild(b);
-      chat.scrollTop = chat.scrollHeight;
+function clockTick(){
+  const d = new Date();
+  const fmt = new Intl.DateTimeFormat('zh-TW',{hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Asia/Taipei'}).format(d);
+  $('#clock').textContent = fmt;
+}
+setInterval(clockTick, 1000); clockTick();
+
+function addMsg(text, cls=''){ const div=document.createElement('div'); div.className='msg '+cls; div.textContent=text; chat.appendChild(div); chat.scrollTo({top:chat.scrollHeight, behavior:'smooth'}); }
+
+function switchCore(newCore){
+  core = newCore; coreLabel.textContent = core;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.core===core));
+  addMsg(`已切換核心：${core}`, 'sys');
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>switchCore(t.dataset.core)));
+switchCore('gpt4o');
+
+$('#sendBtn').addEventListener('click', send);
+$('#input').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send(); } });
+$('#upgradeBtn').addEventListener('click', ()=>{ $('#input').value='元始開工'; send(); });
+
+async function send(){
+  const p = $('#input').value.trim();
+  if(!p) return;
+  addMsg(p, 'me');
+  $('#input').value='';
+  $('#hint').textContent = '…思考中';
+
+  try{
+    const payload = { intent: p, priority:'high', tzOffsetMin: new Date().getTimezoneOffset(), voice: voiceSel.value, core };
+    const r = await fetch('/api/ask_tian', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
+    const data = await r.json();
+    if(data && data.answer){ addMsg(data.answer); }
+    else if (data && data.ops) { addMsg(data.ops); }
+    else { addMsg('[系統] 上游暫時無回覆','sys'); }
+    if(data && typeof data.estimate_usd !== 'undefined'){
+      $('#cost').textContent = Number(data.estimate_usd).toFixed(4);
+      $('#level').textContent = data.level || '--';
     }
+  }catch(err){
+    addMsg('[錯誤] upstream_error','sys');
+  } finally{ $('#hint').textContent=''; }
+}
 
-    async function loadPacks(){
-      const styles = ["gu-tech","plain-light","dark-neutral"];
-      const voices = ["掌門令","工務札記","行銷簡報","安撫客服","技術決策"];
-      styleSel.innerHTML = styles.map(s=>`<option value="${s}">${s}</option>`).join("");
-      voiceSel.innerHTML = voices.map(v=>`<option value="${v}">${v}</option>`).join("");
-      styleSel.value = cfg.style; voiceSel.value = cfg.voice;
-      applyStyle(cfg.style);
-    }
+// drawer
+const drawer = $('#drawer');
+$('#closeDrawer').onclick = ()=> drawer.classList.remove('open');
+document.querySelectorAll('.sidebtn').forEach(btn=>btn.onclick=()=>openPanel(btn.dataset.drawer));
 
-    async function applyStyle(id){
-      const r = await fetch(`/public/stylepacks/${id}.json`); const s = await r.json();
-      document.documentElement.style.setProperty('--bg', s.bg);
-      document.documentElement.style.setProperty('--accent', s.accent);
-      document.documentElement.style.setProperty('--text', s.text || '#F5F7FA');
-      document.documentElement.style.setProperty('--radius', (s.radius||24)+'px');
-    }
+async function openPanel(name){
+  const title = {proj:'專案', rich:'富策體', grey:'灰情報', audit:'監察院', legal:'法務', settings:'設定'}[name] || '面板';
+  $('#drawerTitle').textContent = title;
+  const body = $('#drawerBody'); body.innerHTML = '';
 
-    async function ping(){
-      try{
-        const r = await fetch(cfg.api, { method:"GET", cache:"no-store" });
-        $("#health").textContent = r.ok ? "OK" : "FAIL";
-      }catch{ $("#health").textContent = "FAIL"; }
-    }
-
-    function bindTabs(){
-      document.querySelectorAll(".tab").forEach(el=>{
-        el.onclick = ()=>{
-          document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
-          el.classList.add("active");
-          core = el.dataset.core;
-          addBubble(`已切換核心：${core}`,"bot");
-        }
-      });
-    }
-
-    async function send(){
-      const p = $("#prompt").value.trim();
-      if(!p) return;
-      addBubble(p,"user");
-      $("#prompt").value = "";
-      const payload = { intent: p, priority:"high", tzOffsetMin: cfg.tzOffsetMin, voice: voiceSel.value, core  };
-      try{
-        const r = await fetch(cfg.api, { method:"POST", headers:{'content-type':'application/json'}, body: JSON.stringify(payload) });
-        const j = await r.json();
-        if (r.status===202) {
-          addBubble(`已排入離峰處理（等級 ${j.level}，預估$${(j.estimate_usd||0).toFixed(4)}）`);
-          return;
-        }
-        if (!j.ok) throw new Error(j.error || "fail");
-        addBubble(j.answer || "[空回應]");
-        budget.textContent = `$${(j.estimate_usd||0).toFixed(4)} / this round · 等級 ${j.level}`;
-      }catch(e){
-        addBubble(`[錯誤] ${e.message}`);
+  if(name==='audit'){
+    body.innerHTML = `<div class="kpi">讀取監察資料中…</div>`;
+    try{
+      const r = await fetch('/api/metrics_summary');
+      const d = await r.json();
+      if(d.ok){
+        body.innerHTML = `
+          <div class="kpi">總成本（累計）：$ ${Number(d.total_usd||0).toFixed(4)}</div>
+          <br/>
+          <div>按核心：</div>
+          <ul>
+            ${Object.entries(d.by_core||{}).map(([k,v])=>`<li>${k}：$ ${Number(v).toFixed(4)}</li>`).join('')}
+          </ul>`;
+      }else{
+        body.innerHTML = `<div class="kpi">暫無資料（或未接 Supabase）。</div>`;
       }
-    }
+    }catch(e){ body.innerHTML = `<div class="kpi">讀取失敗。</div>`; }
+  }
+  else if(name==='grey'){
+    body.innerHTML = `
+      <div>灰情報輸入</div>
+      <textarea id="greyText" rows="4" style="width:100%; background:#0f141d; color:#fff; border:1px solid #1a2430; border-radius:12px; padding:10px" placeholder="貼上觀察、風聲、初步線索…"></textarea>
+      <div style="display:flex; gap:10px; margin-top:10px">
+        <button class="btn primary" id="greySend">提交</button>
+      </div>
+      <div class="small" id="greyHint"></div>
+    `;
+    $('#greySend').onclick = async()=>{
+      const txt = $('#greyText').value.trim();
+      if(!txt) return $('#greyHint').textContent = '請先輸入內容';
+      $('#greyHint').textContent = '上傳中…';
+      try{
+        const r = await fetch('/api/grey_intel_ingest', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ text: txt }) });
+        const d = await r.json().catch(()=>({}));
+        $('#greyHint').textContent = d.ok ? '已提交' : '提交失敗（API 未開或錯誤）';
+      }catch(e){ $('#greyHint').textContent = '提交失敗。'; }
+    };
+  }
+  else if(name==='legal'){
+    body.innerHTML = `
+      <div class="kpi">法務組·計價策略（示意）</div>
+      <ul class="small">
+        <li>即時：4o / Gemini 走高配；非即時：DeepSeek 背景補鍊。</li>
+        <li>離峰撈取：夜間批次處理 ObserverChain。</li>
+        <li>生命線：超過日預算自動降級並延後執行。</li>
+      </ul>
+    `;
+  }
+  else if(name==='settings'){
+    body.innerHTML = `
+      <div class="kpi">快速設定</div>
+      <div class="small">風格與語風以頁面選單為準；核心以上方分頁為準。按「一鍵升級」等同輸入「元始開工」。</div>
+    `;
+  }else{
+    body.innerHTML = `<div class="small">此面板將在下一輪接上詳細功能。</div>`;
+  }
+  drawer.classList.add('open');
+}
 
-    $("#send").onclick = send;
-    $("#prompt").addEventListener('keydown', (e)=>{ if(e.key==='Enter') send(); });
-    styleSel.onchange = ()=>{ cfg.style = styleSel.value; applyStyle(cfg.style); };
-    voiceSel.onchange = ()=>{ cfg.voice = voiceSel.value; };
-
-    function openQuick(which){ addBubble(`開啟 ${which} 面板（占位）`); }
-    loadPacks(); bindTabs(); ping();
-  </script>
+// initial
+addMsg('已切換核心：gpt4o','sys');
+addMsg('你好，有什麼我可以幫助你的？');
+</script>
 </body>
 </html>
