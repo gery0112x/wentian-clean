@@ -129,6 +129,32 @@ async function callGrok(messages, max_tokens) {
 }
 
 // Upgrade checks (when intent is "元始開工")
+// Special command: 元始交卷 / 交付藍圖
+const intentNorm = (intent || '').replace(/\s+/g,'');
+const submitWords = ['元始交卷','交付藍圖','交卷'];
+if (submitWords.some(w => intentNorm.includes(w))) {
+  // 抓 JSON（支援 ```json ... ``` 或直接 { ... }）
+  const m = (intent.match(/```json([\s\S]*?)```/i) || [])[1]
+         || (intent.match(/\{[\s\S]*\}$/) || [])[0];
+  if (!m) return J(200, { ok:false, error:'未找到 JSON 內容（請用 ```json ... ``` 包起來）' });
+
+  let pack; try { pack = JSON.parse(m); } catch(e) {
+    return J(200, { ok:false, error:'JSON 解析失敗：' + String(e) });
+  }
+
+  const touched = {styles:0, voices:0, modules:0, policy:0, triggers:0, kpi:0};
+  if (pack.styles)  { await sbPutKV('style_profiles', pack.styles);   touched.styles  = pack.styles.length || 1; }
+  if (pack.voices)  { await sbPutKV('voice_profiles', pack.voices);   touched.voices  = pack.voices.length || 1; }
+  if (pack.modules) { await sbPutKV('modules', pack.modules);         touched.modules = pack.modules.length || 1; }
+  if (pack.policy)  { await sbPutKV('policy', pack.policy);           touched.policy  = 1; }
+  if (pack.triggers){ await sbPutKV('triggers', pack.triggers);       touched.triggers= Object.keys(pack.triggers||{}).length || 1; }
+  if (pack.kpi)     { await sbPutKV('kpi_rules', pack.kpi);           touched.kpi     = pack.kpi.length || 1; }
+
+  return J(200, { ok:true, answer:
+    `【藍圖已入庫】styles=${touched.styles} voices=${touched.voices} modules=${touched.modules} policy=${touched.policy} triggers=${touched.triggers} kpi=${touched.kpi}` 
+  });
+}
+
 async function runUpgradeChecklist() {
   const env = {
     openai: !!process.env.OPENAI_API_KEY,
