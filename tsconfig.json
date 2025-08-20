@@ -9,7 +9,10 @@
     "resolveJsonModule": true,
     "noEmit": true,
     "strict": false,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+
+    "baseUrl": ".",                 // ← 加這行
+    "paths": { "@/*": ["*"] }       // ← 加這行：把 @ 指到專案根
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
   "exclude": ["node_modules"]
