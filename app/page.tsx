@@ -1,16 +1,14 @@
-// app/page.tsx  — Next.js App Router 首頁（Server Component）
-// 簡單、零依賴，不用瀏覽器 API，確保編譯必過
-
+// app/page.tsx
 export default function Home() {
   return (
     <main
       style={{
         minHeight: '100dvh',
+        padding: '24px 20px',
         background: '#0b0c10',
         color: '#e6edf3',
         fontFamily:
           '-apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,Apple Color Emoji,Segoe UI Emoji',
-        padding: '24px 20px',
       }}
     >
       <h1 style={{ fontSize: 28, marginBottom: 12 }}>OK : wentian-clean</h1>
@@ -34,7 +32,7 @@ export default function Home() {
       </ul>
 
       <div style={{ marginTop: 18, opacity: 0.7, fontSize: 13 }}>
-        App Router • Next.js 14 • 此頁不使用瀏覽器 API，純 Server Component，避免 build 出錯。
+        App Router • Next.js 14 • 純 Server Component，避免 build 出錯。
       </div>
     </main>
   );
