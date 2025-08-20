@@ -1,11 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-const sb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!)
+import { createClient } from "@supabase/supabase-js";
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-export async function GET(req: NextRequest){
-  const id = new URL(req.url).searchParams.get('jobId')
-  if(!id) return NextResponse.json({ error:'jobId required' }, { status:400 })
-  const { data } = await sb.from('upgrade_jobs').select('*').eq('id', id).single()
-  if(!data) return NextResponse.json({ error:'not found' }, { status:404 })
-  return NextResponse.json({ status:data.status, progress:data.progress, log:data.log })
+function getSupabase() {
+  const url = process.env.SUPABASE_URL || (process.env as any).supabaseUrl;
+  const key = process.env.SUPABASE_SERVICE_ROLE || (process.env as any).supabaseKey;
+  if (!url || !key) return null;
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
+export async function GET() {
+  const sb = getSupabase();
+  if (!sb) return Response.json({ ok:false, error:"MISSING_SUPABASE_ENV" }, { status:503 });
+
+  const { data, error } = await sb.from("upgrade_events")
+    .select("*").order("created_at", { ascending: false }).limit(10);
+
+  if (error) return Response.json({ ok:false, error:String(error) }, { status:500 });
+  return Response.json({ ok:true, events:data ?? [] });
 }
