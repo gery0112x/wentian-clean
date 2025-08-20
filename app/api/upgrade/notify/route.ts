@@ -18,6 +18,11 @@ export async function POST(req: Request) {
     .from("upgrade_events")
     .insert({ type: "notify", payload: body ?? {}, created_at: new Date().toISOString() });
 
-  if (error) return Response.json({ ok:false, step:"upgrade:notify", error: String(error.message ?? error) }, { status:500 });
+  if (error) {
+    return Response.json(
+      { ok:false, step:"upgrade:notify", error: String((error as any)?.message ?? error) },
+      { status:500 }
+    );
+  }
   return Response.json({ ok:true, step:"upgrade:notify (handler)" });
 }
