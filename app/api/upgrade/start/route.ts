@@ -9,6 +9,10 @@ function getSupabase() {
   return createClient(url, key, { auth: { persistSession: false } });
 }
 
+export async function GET() {
+  return Response.json({ ok:true, route:"/api/upgrade/start", method:"GET" });
+}
+
 export async function POST(req: Request) {
   const sb = getSupabase();
   if (!sb) return Response.json({ ok:false, error:"MISSING_SUPABASE_ENV" }, { status:503 });
@@ -18,6 +22,6 @@ export async function POST(req: Request) {
     .from("upgrade_events")
     .insert({ type: "start", payload: body ?? {}, created_at: new Date().toISOString() });
 
-  if (error) return Response.json({ ok:false, step:"upgrade:start", error: String(error.message ?? error) }, { status:500 });
+  if (error) return Response.json({ ok:false, step:"upgrade:start", error: String((error as any)?.message ?? error) }, { status:500 });
   return Response.json({ ok:true, step:"upgrade:start (handler)" });
 }
