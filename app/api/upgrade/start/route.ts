@@ -14,11 +14,10 @@ export async function POST(req: Request) {
   if (!sb) return Response.json({ ok:false, error:"MISSING_SUPABASE_ENV" }, { status:503 });
 
   const body = await req.json().catch(() => ({}));
-  await sb.from("upgrade_events").insert({
-    type: "start",
-    payload: body ?? {},
-    created_at: new Date().toISOString()
-  }).catch(() => null);
+  const { error } = await sb
+    .from("upgrade_events")
+    .insert({ type: "start", payload: body ?? {}, created_at: new Date().toISOString() });
 
+  if (error) return Response.json({ ok:false, step:"upgrade:start", error: String(error.message ?? error) }, { status:500 });
   return Response.json({ ok:true, step:"upgrade:start (handler)" });
 }
