@@ -1,6 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  reactStrictMode: true
-  // 不要設定 output:'export'，要保留 Serverless API。
+  reactStrictMode: true,
+  experimental: { typedRoutes: true }
+  // 絕對不要加 output: 'export'
 };
 export default nextConfig;
