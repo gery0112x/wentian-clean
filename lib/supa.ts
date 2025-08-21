@@ -1,41 +1,43 @@
-// lib/supa.ts
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+// /lib/supa.ts
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { env } from './env';
 
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE!;
+let _service: SupabaseClient | null = null;
+let _anon: SupabaseClient | null = null;
 
-const isServer = typeof window === "undefined";
-
-/** 以 anon key 建立 client（瀏覽器用、或當作後端 fallback） */
-export function supaAnon(): SupabaseClient {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { persistSession: !isServer, autoRefreshToken: !isServer },
-    global: { headers: { "X-Client-Info": "wentian-clean/anon" } },
-  });
-}
-
-/** 以 service_role 建立 client（伺服端用；缺少時會回退 anon） */
+/** 後端專用：使用 Service Role（會繞過 RLS） */
 export function supaService(): SupabaseClient {
-  const key = isServer && SUPABASE_SERVICE_ROLE
-    ? SUPABASE_SERVICE_ROLE
-    : SUPABASE_ANON_KEY; // fallback，避免直接 500
-  const roleHint = key === SUPABASE_SERVICE_ROLE ? "service" : "server-ANON";
-  return createClient(SUPABASE_URL, key, {
+  if (_service) return _service;
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE) {
+    throw new Error('Service Role 未設定（缺 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE）');
+  }
+  _service = createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE, {
     auth: { persistSession: false, autoRefreshToken: false },
-    global: { headers: { "X-Client-Info": `wentian-clean/${roleHint}` } },
   });
+  return _service;
 }
 
-/** 統一入口：伺服端→service_role；瀏覽器→anon */
-export function getSupa(): SupabaseClient {
-  return isServer ? supaService() : supaAnon();
+/** （可選）前端/匿名用 */
+export function supaAnon(): SupabaseClient {
+  if (_anon) return _anon;
+  if (!env.SUPABASE_URL || !env.SUPABASE_ANON_KEY) {
+    throw new Error('Anon Key 未設定（缺 SUPABASE_URL 或 SUPABASE_ANON_KEY）');
+  }
+  _anon = createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+  return _anon;
 }
 
-/** 目前 DB 角色：伺服端且有 service_role 才回 service_role，否則 anon */
-export function currentDbRole(): "service_role" | "anon" {
-  return isServer && !!SUPABASE_SERVICE_ROLE ? "service_role" : "anon";
+/** 偵測目前 DB 角色（用一個不破壞性的 select 試探 RLS） */
+export async function detectDbRole(): Promise<'service'|'anon'|'unknown'> {
+  try {
+    const s = supaService();
+    // 若有開 RLS，anon 通常會被擋；service 會通過
+    const { error } = await s.from('roles_routes').select('id').limit(1);
+    if (error && /RLS|permission|not allowed/i.test(error.message)) return 'anon';
+    return 'service';
+  } catch {
+    return 'anon';
+  }
 }
-
-// 新名字別名（給新程式用）
-export const dbRole = currentDbRole;
