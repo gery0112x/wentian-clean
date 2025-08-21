@@ -3,41 +3,34 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { env } from "@/lib/env";
 
 /**
- * 取得 Supabase client
- * - 伺服端(Next.js API Route / Server) 預設使用 service_role（可寫表 & 繞過 RLS）
- * - 瀏覽器(前端) 預設使用 anon（安全）
- *
- * 你也可以明確指定 getSupa('service') 或 getSupa('anon')
+ * 自動判斷環境：
+ * - Server（Node/Edge/Route/Server Action）：用 service_role（繞 RLS，可寫）
+ * - Browser：用 anon（受 RLS 保護）
+ * 別在任何情況把 service_role 放到瀏覽器。
  */
-export function getSupa(
-  mode: "service" | "anon" = typeof window === "undefined" ? "service" : "anon"
-): SupabaseClient {
-  if (!env.SUPABASE_URL) {
-    throw new Error("Missing env.SUPABASE_URL");
+export function getSupa(): SupabaseClient {
+  const isServer = typeof window === "undefined";
+  if (isServer) {
+    return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE, {
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { "X-Client-Info": "wentian-clean/server" } },
+    });
   }
-
-  const key =
-    mode === "service" ? env.SUPABASE_SERVICE_ROLE : env.SUPABASE_ANON_KEY;
-
-  if (!key) {
-    throw new Error(
-      mode === "service"
-        ? "Missing env.SUPABASE_SERVICE_ROLE"
-        : "Missing env.SUPABASE_ANON_KEY"
-    );
-  }
-
-  return createClient(env.SUPABASE_URL, key, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false,
-    },
-    global: {
-      headers: { "X-Client-Info": "wentian-clean" },
-    },
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true },
+    global: { headers: { "X-Client-Info": "wentian-clean/browser" } },
   });
 }
 
-// 需要顯式語意時可用（不強制）：
-export const serverSupa = () => getSupa("service");
-export const browserSupa = () => getSupa("anon");
+// 明確語意別名（可自由使用）
+export const serverSupa = () =>
+  createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { headers: { "X-Client-Info": "wentian-clean/server" } },
+  });
+
+export const browserSupa = () =>
+  createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    auth: { persistSession: true, autoRefreshToken: true },
+    global: { headers: { "X-Client-Info": "wentian-clean/browser" } },
+  });
