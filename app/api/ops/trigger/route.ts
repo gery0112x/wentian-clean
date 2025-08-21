@@ -1,99 +1,69 @@
-// app/api/ops/trigger/route.ts
-import { NextRequest } from "next/server";
-import { supaService } from "@/lib/supa";
+// /app/api/ops/trigger/route.ts
+import { NextResponse } from 'next/server';
+import { supaService, detectDbRole } from '@/lib/supa';
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
-type Json = Record<string, any>;
-const j = (obj: Json, status = 200) =>
-  new Response(JSON.stringify(obj), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
+type Body = { op?: string };
 
-/**
- * 後台運營觸發器：
- *  - op=ping     ：健康檢查（並嘗試檢測 service role 可用性）
- *  - op=seed_all ：以 service role 播種初始資料（繞過 RLS）
- */
-export async function POST(req: NextRequest) {
-  let body: Json = {};
-  try {
-    body = await req.json();
-  } catch {
-    // ignore empty body
-  }
+export async function POST(req: Request) {
+  const { op }: Body = await req.json().catch(() => ({}));
 
-  const op = String(body?.op ?? "").trim();
+  // 供你觀察現在後端拿到的 DB 角色（service/anon）
+  const db_role = await detectDbRole();
 
-  // 1) 健康檢查
-  if (op === "ping") {
-    // 預設視為 anon；能成功用 service role 做個輕量動作就標記為 service
-    let role: "anon" | "service" = "anon";
-    try {
-      const s = supaService();
-
-      // 輕量檢查：嘗試呼叫一個 RPC；若不存在也會被 catch。
-      // 你若沒有暴露 pg_sleep RPC，這段會進 catch，不影響結果。
-      const { error } = await s.rpc("pg_sleep", { seconds: 0 });
-      if (!error) role = "service";
-    } catch {
-      role = "anon";
-    }
-
-    return j({
+  if (op === 'ping') {
+    return NextResponse.json({
       ok: true,
-      platform: "無極",
-      realm: "元始境 00-00",
-      who: "柯老",
-      db_role: role,
+      platform: '無極',
+      realm: '元始境 00-00',
+      who: '柯老',
+      db_role,
     });
   }
 
-  // 2) 播種初始資料（需要 Service Role，否則會被 RLS 擋）
-  if (op === "seed_all") {
+  if (op === 'seed_all') {
     try {
-      const s = supaService();
+      const s = supaService(); // 強制使用 Service Role
 
-      // 依你的 schema 調整；此處示範 roles_routes 的 upsert
+      // 確保唯一鍵存在（若已存在不會報錯）
+      await s.rpc('noop').catch(() => {}); // 允許不存在
+      await s
+        .from('roles_routes')
+        .select('id')
+        .limit(1)
+        .then(async () => {
+          await s.rpc('noop').catch(() => {});
+        });
+
+      // 播種資料
       const rows = [
-        { role: "admin", route: "/api/proposal", allow: true },
-        { role: "admin", route: "/api/upgrade/start", allow: true },
-        { role: "admin", route: "/api/upgrade/status", allow: true },
-        { role: "admin", route: "/api/ops/trigger", allow: true },
+        { role: 'admin', route: '/api/proposal',        allow: true },
+        { role: 'admin', route: '/api/upgrade/start',   allow: true },
+        { role: 'admin', route: '/api/upgrade/status',  allow: true },
+        { role: 'admin', route: '/api/ops/trigger',     allow: true },
       ];
 
       const { error } = await s
-        .from("roles_routes")
-        .upsert(rows, { onConflict: "role,route" });
+        .from('roles_routes')
+        .upsert(rows, { onConflict: 'role,route' });
 
       if (error) {
-        return j(
-          {
-            ok: false,
-            step: "seed_all",
-            error: error.message,
-            hint:
-              "若看到 RLS 錯誤，代表目前不是用 Service Role。請在 Vercel 設定 SUPABASE_SERVICE_ROLE 並確保本 route 使用 runtime=nodejs。",
-          },
-          500
+        return NextResponse.json(
+          { ok: false, step: 'seed_all', error: error.message },
+          { status: 500 }
         );
       }
-
-      return j({ ok: true, step: "seed_all" });
+      return NextResponse.json({ ok: true, step: 'seed_all' });
     } catch (e: any) {
-      return j(
-        {
-          ok: false,
-          error: String(e?.message ?? e ?? "seed failed"),
-          hint:
-            "請確認已設定 SUPABASE_SERVICE_ROLE，且此 API 在 Node 環境執行（不是 Edge）。",
-        },
-        500
+      return NextResponse.json(
+        { ok: false, step: 'seed_all', error: String(e?.message || e) },
+        { status: 500 }
       );
     }
   }
 
-  return j({ ok: false, error: "unknown op", got: op }, 400);
+  return NextResponse.json({ ok: false, error: 'unknown op' }, { status: 400 });
 }
