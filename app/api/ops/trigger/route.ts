@@ -1,53 +1,62 @@
 // app/api/ops/trigger/route.ts
 import { NextRequest } from "next/server";
-import { supaService, currentDbRole } from "@/lib/supa";
+import { supaService } from "@/lib/supa";
 
-// 必須用 Node 執行，才能安全使用 Service Role
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 type Json = Record<string, any>;
-const j = (obj: Json, init?: number) =>
+const j = (obj: Json, status = 200) =>
   new Response(JSON.stringify(obj), {
-    status: init ?? 200,
+    status,
     headers: { "content-type": "application/json" },
   });
 
 /**
  * 後台運營觸發器：
- *  - op=ping      ：健康檢查 + 回報目前 DB 角色（anon/service）
- *  - op=seed_all  ：以 service role 播種初始資料（繞過 RLS）
+ *  - op=ping     ：健康檢查（並嘗試檢測 service role 可用性）
+ *  - op=seed_all ：以 service role 播種初始資料（繞過 RLS）
  */
 export async function POST(req: NextRequest) {
   let body: Json = {};
   try {
     body = await req.json();
   } catch {
-    // ignore
+    // ignore empty body
   }
+
   const op = String(body?.op ?? "").trim();
 
-  // 1) 健康檢查（同時檢測 service role 是否可用）
+  // 1) 健康檢查
   if (op === "ping") {
-    let role = currentDbRole("anon");
+    // 預設視為 anon；能成功用 service role 做個輕量動作就標記為 service
+    let role: "anon" | "service" = "anon";
     try {
       const s = supaService();
-      // 輕量 RPC 測試（不串 .catch，直接檢查回傳）
+
+      // 輕量檢查：嘗試呼叫一個 RPC；若不存在也會被 catch。
+      // 你若沒有暴露 pg_sleep RPC，這段會進 catch，不影響結果。
       const { error } = await s.rpc("pg_sleep", { seconds: 0 });
-      if (!error) role = currentDbRole("service");
+      if (!error) role = "service";
     } catch {
-      role = currentDbRole("anon");
+      role = "anon";
     }
-    return j({ ok: true, platform: "無極", realm: "元始境 00-00", who: "柯老", db_role: role });
+
+    return j({
+      ok: true,
+      platform: "無極",
+      realm: "元始境 00-00",
+      who: "柯老",
+      db_role: role,
+    });
   }
 
-  // 2) 播種資料（需要 Service Role；若用 anon 就會被 RLS 擋下）
+  // 2) 播種初始資料（需要 Service Role，否則會被 RLS 擋）
   if (op === "seed_all") {
     try {
       const s = supaService();
 
-      // 例：roles_routes 播種（若表不存在會回錯；這裡只示範流程）
-      // 你的 schema 若不同，改成實際的表和欄位
+      // 依你的 schema 調整；此處示範 roles_routes 的 upsert
       const rows = [
         { role: "admin", route: "/api/proposal", allow: true },
         { role: "admin", route: "/api/upgrade/start", allow: true },
@@ -57,9 +66,20 @@ export async function POST(req: NextRequest) {
 
       const { error } = await s
         .from("roles_routes")
-        .upsert(rows, { onConflict: "role,route" }); // 若有 unique constraint，請調整
+        .upsert(rows, { onConflict: "role,route" });
 
-      if (error) return j({ ok: false, step: "seed_all", error: error.message }, 500);
+      if (error) {
+        return j(
+          {
+            ok: false,
+            step: "seed_all",
+            error: error.message,
+            hint:
+              "若看到 RLS 錯誤，代表目前不是用 Service Role。請在 Vercel 設定 SUPABASE_SERVICE_ROLE 並確保本 route 使用 runtime=nodejs。",
+          },
+          500
+        );
+      }
 
       return j({ ok: true, step: "seed_all" });
     } catch (e: any) {
@@ -68,7 +88,7 @@ export async function POST(req: NextRequest) {
           ok: false,
           error: String(e?.message ?? e ?? "seed failed"),
           hint:
-            "若看到 RLS 錯誤，代表現在用的是 anon key。請在 Vercel 設定 SUPABASE_SERVICE_ROLE 並確定本 route 使用 runtime=nodejs。",
+            "請確認已設定 SUPABASE_SERVICE_ROLE，且此 API 在 Node 環境執行（不是 Edge）。",
         },
         500
       );
