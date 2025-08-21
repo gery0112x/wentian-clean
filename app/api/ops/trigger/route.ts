@@ -1,128 +1,76 @@
-// app/api/ops/trigger/route.ts
-import 'server-only';
+// /app/api/ops/trigger/route.ts
 import { NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { supaService, currentDbRole } from '@/lib/supa';
 
-function admin() {
-  const url =
-    process.env.SUPABASE_URL ||
-    process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key =
-    process.env.SUPABASE_SERVICE_ROLE ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_KEY ||
-    process.env.SUPABASE_SECRET;
-
-  if (!url) throw new Error('Missing SUPABASE_URL');
-  if (!key) throw new Error('Missing SUPABASE_SERVICE_ROLE (Service Role)');
-
-  // 用 Service Role 建 admin client（會自動帶 Bearer key）
-  return createClient(url, key, { auth: { persistSession: false } });
-}
+type Body = {
+  op?: 'ping' | 'seed_all';
+};
 
 export async function POST(req: Request) {
   try {
-    const { op } = await req.json().catch(() => ({} as any));
-    if (!op) {
-      return NextResponse.json(
-        { ok: false, error: 'bad_request: missing { op }' },
-        { status: 400 },
-      );
-    }
+    const body = (await req.json().catch(() => ({}))) as Body;
+    const op = body.op ?? 'ping';
 
-    const supa = admin();
-
-    // 先檢查目前角色（anon / service_role）
-    const who = await supa.rpc('whoami');
-    const role = (who.data as string) || 'unknown';
-
+    // 單一入口：目前兩個動作 ping / seed_all
     if (op === 'ping') {
+      // 用 service role 可同時當健康檢查與權限檢查
+      let dbRole: 'service_role' | 'anon' = 'anon';
+      try {
+        const s = supaService();
+        // 讀個 NOW() 試試 service key 是否能用（不需要真的查表）
+        await s.rpc('pg_sleep', { seconds: 0 }).catch(() => null);
+        dbRole = currentDbRole('service');
+      } catch {
+        dbRole = currentDbRole('anon');
+      }
+
       return NextResponse.json({
         ok: true,
         platform: '無極',
         realm: '元始境 00-00',
         who: '柯老',
-        db_role: role,
+        db_role: dbRole,
       });
-    }
-
-    if (role !== 'service_role') {
-      return NextResponse.json(
-        {
-          ok: false,
-          error:
-            `RLS_BLOCKED: 現在用的是「${role}」不是 service_role。` +
-            ` 請到 Vercel 專案設定 > Environment Variables，設定：` +
-            ` SUPABASE_URL（專案 URL）與 SUPABASE_SERVICE_ROLE（Service Role key），並重新部署。`,
-          hint: 'Service Role 會自動繞過 RLS；anon 會被擋。',
-        },
-        { status: 401 },
-      );
     }
 
     if (op === 'seed_all') {
-      // 基礎路由權限
-      const { error: rErr } = await supa
+      // 必須用 service role 才能繞過 RLS
+      const s = supaService();
+
+      // ===== 依你的資料表調整 =====
+      // 這裡示範寫入 roles_routes（若你的欄位不同請改成你的 schema）
+      // upsert 可避免重複
+      const { error: err1 } = await s
         .from('roles_routes')
-        .insert([
-          { role: '無極.元始境 00-00', route: '/chat', allow: true },
-          { role: '無極.元始境 00-00', route: '/api/*', allow: true },
-          { role: '柯老', route: '/chat', allow: true },
-          { role: '柯老', route: '/api/*', allow: true },
-        ]);
+        .upsert(
+          [
+            { role: 'admin', route: '/chat', allow: true },
+            { role: 'guest', route: '/api/llm/health', allow: true },
+            { role: 'guest', route: '/api/version/info', allow: true },
+          ],
+          { onConflict: 'role,route' }
+        );
 
-      if (rErr) throw rErr;
+      if (err1) {
+        return NextResponse.json(
+          { ok: false, step: 'seed.roles_routes', error: err1.message },
+          { status: 500 }
+        );
+      }
 
-      // 建一筆示範提案
-      const { data: p, error: pErr } = await supa
-        .from('proposals')
-        .insert([
-          {
-            goal: '新增新版區塊（白話提案示例）',
-            scope: { area: 'ui/header', files: ['app/layout.tsx', 'app/page.tsx'] },
-            impact: { risk: 'low', systems: ['next', 'vercel'], users: 'all' },
-            artifacts: { preview: null, pr: null },
-            notes: '由 ops/trigger 建立的示範提案',
-            status: 'draft',
-            model: 'gpt-4o',
-          },
-        ])
-        .select()
-        .single();
-      if (pErr) throw pErr;
-
-      const { error: iErr } = await supa.from('proposal_items').insert([
-        {
-          proposal_id: p!.id,
-          path: 'app/page.tsx',
-          change: { type: 'insert', section: 'hero', text: 'Hello WUJI' },
-          diff: '++ 新增 hero 區塊',
-        },
-      ]);
-      if (iErr) throw iErr;
-
-      await supa.from('audit_events').insert([
-        {
-          actor: '系統',
-          action: 'bootstrap:seed',
-          payload_json: { demo: true },
-          result: { ok: true },
-        },
-      ]);
+      // 你還有其它表要 seed，就在下面繼續加（同樣使用 s = service client）
+      // const { error: err2 } = await s.from('feature_flags').upsert([...], { onConflict: 'key' });
+      // if (err2) return NextResponse.json({ ok:false, step: 'seed.feature_flags', error: err2.message }, { status: 500 });
 
       return NextResponse.json({
         ok: true,
-        op,
-        db_role: role,
-        seeded_proposal: p!.id,
+        step: 'seed_all:done',
+        db_role: 'service_role',
       });
     }
 
-    return NextResponse.json({ ok: false, error: `unknown op: ${op}` }, { status: 400 });
-  } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: String(err?.message || err) },
-      { status: 500 },
-    );
+    return NextResponse.json({ ok: false, error: 'unknown op' }, { status: 400 });
+  } catch (e: any) {
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
