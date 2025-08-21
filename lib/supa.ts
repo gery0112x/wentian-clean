@@ -1,28 +1,43 @@
-// /lib/supa.ts
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+// lib/supa.ts
+import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import { env } from "@/lib/env";
 
-// 不要在瀏覽器用 service role！這份檔只會被伺服端 import。
-const SUPABASE_URL = process.env.SUPABASE_URL!;
-const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY!;
-const SUPABASE_SERVICE_ROLE = process.env.SUPABASE_SERVICE_ROLE || process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-export type DBRole = 'anon' | 'service_role';
-
-export function supaAnon(): SupabaseClient {
-  return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false },
-  });
-}
-
-export function supaService(): SupabaseClient {
-  if (!SUPABASE_SERVICE_ROLE) {
-    throw new Error('Missing SUPABASE_SERVICE_ROLE in env.');
+/**
+ * 取得 Supabase client
+ * - 伺服端(Next.js API Route / Server) 預設使用 service_role（可寫表 & 繞過 RLS）
+ * - 瀏覽器(前端) 預設使用 anon（安全）
+ *
+ * 你也可以明確指定 getSupa('service') 或 getSupa('anon')
+ */
+export function getSupa(
+  mode: "service" | "anon" = typeof window === "undefined" ? "service" : "anon"
+): SupabaseClient {
+  if (!env.SUPABASE_URL) {
+    throw new Error("Missing env.SUPABASE_URL");
   }
-  return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE, {
-    auth: { autoRefreshToken: false, persistSession: false },
+
+  const key =
+    mode === "service" ? env.SUPABASE_SERVICE_ROLE : env.SUPABASE_ANON_KEY;
+
+  if (!key) {
+    throw new Error(
+      mode === "service"
+        ? "Missing env.SUPABASE_SERVICE_ROLE"
+        : "Missing env.SUPABASE_ANON_KEY"
+    );
+  }
+
+  return createClient(env.SUPABASE_URL, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+    global: {
+      headers: { "X-Client-Info": "wentian-clean" },
+    },
   });
 }
 
-export function currentDbRole(which: 'service' | 'anon'): DBRole {
-  return which === 'service' ? 'service_role' : 'anon';
-}
+// 需要顯式語意時可用（不強制）：
+export const serverSupa = () => getSupa("service");
+export const browserSupa = () => getSupa("anon");
