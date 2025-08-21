@@ -1,20 +1,32 @@
-// @/lib/supa.ts
+// /lib/supa.ts
 import { createClient } from '@supabase/supabase-js';
 import { env } from '@/lib/env';
 
-export type DbRole = 'anon' | 'service';
+type DbRole = 'service' | 'anon';
 
-/** 伺服端 Service Role 用戶端（繞過 RLS，用於後台管理與批次作業） */
+const URL = env.SUPABASE_URL;
+
+/** 服務端專用：使用 Service Role Key（繞過 RLS） */
 export function supaService() {
-  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE) {
-    throw new Error('SUPABASE_URL 或 SUPABASE_SERVICE_ROLE 未設定');
-  }
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE, {
+  return createClient(URL, env.SUPABASE_SERVICE_ROLE, {
     auth: { persistSession: false },
   });
 }
 
-/** 回報目前伺服端所用的 DB 角色（有沒有 Service Role Key） */
+/** 公用匿名：使用 Anon Key（受 RLS 保護） */
+export function supaAnon() {
+  return createClient(URL, env.SUPABASE_ANON_KEY, {
+    auth: { persistSession: false },
+  });
+}
+
+/** 便利函式：依角色取 client（預設 anon） */
+export function getSupa(role: DbRole = 'anon') {
+  return role === 'service' ? supaService() : supaAnon();
+}
+
+/** 目前 API 執行時的 DB 角色（API Route 在伺服器上，可安全視為 service） */
 export function currentDbRole(): DbRole {
+  // 在 Vercel 的 Server Runtime 下，拿得到 SERVICE ROLE 就視為 service
   return env.SUPABASE_SERVICE_ROLE ? 'service' : 'anon';
 }
