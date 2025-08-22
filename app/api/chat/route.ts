@@ -1,62 +1,63 @@
 // app/api/chat/route.ts
-import { NextResponse, type NextRequest } from 'next/server';
-import { env } from '@/lib/env';
-import { summarizeHistory } from '@/lib/summarize';
+import type { NextRequest } from 'next/server';
 
 export const runtime = 'nodejs';
 
 type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
 
+function envOrDie(name: string, fallback?: string) {
+  const v = process.env[name] ?? fallback;
+  if (!v) throw new Error(`Missing env: ${name}`);
+  return v;
+}
+
+const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
+const OPENAI_API_KEY  = envOrDie('OPENAI_API_KEY');
+const OPENAI_MODEL    = process.env.OPENAI_MODEL ?? 'gpt-4o-2024-08-06';
+
 export async function POST(req: NextRequest) {
   try {
-    const { model, messages = [] } = (await req.json()) as {
-      model?: string;
-      messages?: Msg[];
-    };
-
-    // 系統前言（你之前定義的白話提案模組用語境）
+    const body = await req.json().catch(() => ({}));
+    const inputMessages: Msg[] = Array.isArray(body?.messages) ? body.messages : [];
     const system: Msg = {
       role: 'system',
-      content:
-        '你在一個工業平台中回覆：先白話+（括號術語）。若提到「白話提案模組」，就走草稿→驗證→2分鐘快閘→通過即接回/失敗即回滾。',
+      content: '你在一個工業平台中回覆：先由後台（白話提案模組）判斷是否接手；未接手再走一般聊天。回覆請精簡清楚。'
     };
 
-    // 盡量維持你原有 summarize 的簽名（前一版編譯錯誤：少了第二參數）
-    const summary =
-      (await summarizeHistory(messages ?? [], env.OPENAI_MODEL)) ?? '';
-
-    const body = {
-      model: model || env.OPENAI_MODEL,
-      temperature: 0.2,
-      messages: [system, ...(messages ?? [])] as Msg[],
-      // 你如果要把 summary 丟給模型，這裡也可以：
-      // metadata: { summary },
+    const payload = {
+      model: body?.model ?? OPENAI_MODEL,
+      messages: [system, ...inputMessages],
     };
 
-    // 透過你設定的 OPENAI_BASE_URL 直連（或者走 OpenAI 官方端點）
-    const r = await fetch(`${env.OPENAI_BASE_URL}/chat/completions`, {
+    const r = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
+        'content-type': 'application/json',
+        'authorization': `Bearer ${OPENAI_API_KEY}`,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
 
     if (!r.ok) {
-      const text = await r.text();
-      return NextResponse.json(
-        { ok: false, error: text || r.statusText },
-        { status: r.status },
+      const errText = await r.text().catch(() => '');
+      return Response.json(
+        { ok: false, error: `upstream ${r.status}: ${errText}` },
+        { status: 500 },
       );
     }
 
     const data = await r.json();
-    return NextResponse.json({ ok: true, data, summary });
-  } catch (err: any) {
-    return NextResponse.json(
-      { ok: false, error: String(err?.message ?? err) },
-      { status: 500 },
-    );
+    const content: string =
+      data?.choices?.[0]?.message?.content ??
+      data?.choices?.[0]?.delta?.content ??
+      '';
+
+    return Response.json({
+      ok: true,
+      message: { role: 'assistant', content },
+      usage: data?.usage ?? null,
+    });
+  } catch (e: any) {
+    return Response.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
   }
 }
