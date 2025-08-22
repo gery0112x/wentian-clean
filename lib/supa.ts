@@ -4,29 +4,43 @@ import { env } from '@/lib/env';
 
 type DbRole = 'service' | 'anon';
 
-const URL = env.SUPABASE_URL;
+const URL =
+  process.env.SUPABASE_URL ||
+  env.SUPABASE_URL;
 
-/** 服務端專用：使用 Service Role Key（繞過 RLS） */
+// 直接從 process.env 讀，若沒值再退回 env 包裝（避免包裝漏帶 server-only）
+const SERVICE_ROLE =
+  process.env.SUPABASE_SERVICE_ROLE ||
+  env.SUPABASE_SERVICE_ROLE ||
+  '';
+
+const ANON_KEY =
+  process.env.SUPABASE_ANON_KEY ||
+  env.SUPABASE_ANON_KEY ||
+  '';
+
+/** 服務端：Service Role（繞過 RLS） */
 export function supaService() {
-  return createClient(URL, env.SUPABASE_SERVICE_ROLE, {
-    auth: { persistSession: false },
-  });
+  if (!URL || !SERVICE_ROLE) {
+    throw new Error('SUPABASE_URL 或 SUPABASE_SERVICE_ROLE 未設定');
+  }
+  return createClient(URL, SERVICE_ROLE, { auth: { persistSession: false } });
 }
 
-/** 公用匿名：使用 Anon Key（受 RLS 保護） */
+/** 匿名：Anon（受 RLS） */
 export function supaAnon() {
-  return createClient(URL, env.SUPABASE_ANON_KEY, {
-    auth: { persistSession: false },
-  });
+  if (!URL || !ANON_KEY) {
+    throw new Error('SUPABASE_URL 或 SUPABASE_ANON_KEY 未設定');
+  }
+  return createClient(URL, ANON_KEY, { auth: { persistSession: false } });
 }
 
-/** 便利函式：依角色取 client（預設 anon） */
+/** 便利：依角色取 client（預設 anon） */
 export function getSupa(role: DbRole = 'anon') {
   return role === 'service' ? supaService() : supaAnon();
 }
 
-/** 目前 API 執行時的 DB 角色（API Route 在伺服器上，可安全視為 service） */
+/** 目前 DB 角色：只要拿得到 SERVICE_ROLE 就視為 service */
 export function currentDbRole(): DbRole {
-  // 在 Vercel 的 Server Runtime 下，拿得到 SERVICE ROLE 就視為 service
-  return env.SUPABASE_SERVICE_ROLE ? 'service' : 'anon';
+  return SERVICE_ROLE ? 'service' : 'anon';
 }
