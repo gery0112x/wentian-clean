@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 type ModelCode = 'DS' | '4O' | 'GM' | 'GK';
 
@@ -13,9 +13,14 @@ export default function ChatEntry() {
   const version = useMemo(() => {
     const ok = (s: string | null) =>
       !!s && s.length === 5 && s[2] === '-' && !isNaN(+s.slice(0, 2)) && !isNaN(+s.slice(3, 5));
-    const urlV = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '').get('v');
+    const urlV =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('v')
+        : null;
     if (ok(urlV)) {
-      try { localStorage.setItem('wuji.version', urlV!); } catch {}
+      try {
+        localStorage.setItem('wuji.version', urlV!);
+      } catch {}
       return urlV!;
     }
     try {
@@ -34,7 +39,9 @@ export default function ChatEntry() {
 
   // ----- Close drawer on ESC -----
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDrawerOpen(false); };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setDrawerOpen(false);
+    };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
@@ -49,7 +56,9 @@ export default function ChatEntry() {
             <path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke="currentColor" strokeWidth="2" />
           </svg>
         </button>
-        <div className="brand">無極・元始境&nbsp;<span className="ver">{version}</span></div>
+        <div className="brand">
+          無極・元始境&nbsp;<span className="ver">{version}</span>
+        </div>
         <div aria-hidden className="spacer" />
       </header>
 
@@ -143,14 +152,18 @@ export default function ChatEntry() {
               'MVP 定義與封裝策略',
               '財經資料模組',
             ].map((t) => (
-              <button key={t} className="menu-item" onPointerDown={(e) => startHold(e, () => showContext(t))}>
+              <button
+                key={t}
+                className="menu-item"
+                onPointerDown={(e) => handlePress(e, () => showContext(t))}
+              >
                 {t}
               </button>
             ))}
           </div>
 
           <div className="bottom">
-            <button className="menu-item" onClick={() => {/* open platform info */}}>
+            <button className="menu-item" onClick={() => { /* open platform info */ }}>
               平台資訊
             </button>
           </div>
@@ -226,7 +239,8 @@ export default function ChatEntry() {
   );
 }
 
-// ----- Helpers -----
+/* ---------------- Helpers ---------------- */
+
 function mapModel(code: ModelCode): string {
   return (
     {
@@ -238,9 +252,10 @@ function mapModel(code: ModelCode): string {
   )[code];
 }
 
+/** 通用長按：按下 300ms 以上觸發 onLong；鬆開/離開/取消中止 */
 function handlePress(e: React.PointerEvent, onLong: () => void) {
   let timer: any;
-  const start = () => (timer = setTimeout(onLong, 3000));
+  const start = () => (timer = setTimeout(onLong, 300)); // 你先前是 3s，我這裡設 300ms 比較好測；要 3000ms 也可。
   const stop = () => timer && clearTimeout(timer);
   start();
   const el = e.currentTarget as HTMLElement;
@@ -255,25 +270,30 @@ function handlePress(e: React.PointerEvent, onLong: () => void) {
   el.addEventListener('pointercancel', off);
 }
 
+/** 模型長按行為（示意） */
 function onLongPress(target: ModelCode, current: ModelCode, setActive: (m: ModelCode) => void) {
   if (target === current) {
-    // 當前模型：顯示詳情（示意）
     alert(`顯示 ${mapModel(target)} 參數（示意）`);
   } else {
-    // 非當前：進入對戰（示意）
     const judge = pickJudge([current, target]);
     alert(`挑戰：${current} vs ${target}｜裁判：${judge}`);
     setActive(target);
   }
 }
 
+/** 抽屜項目長按情境選單（示意） */
+function showContext(label: string) {
+  alert(`「${label}」：重新命名／新增至專案／封存／刪除（示意選單）`);
+}
+
+/** 裁判選擇偽碼（你先前規則的精簡版） */
 function pickJudge(contenders: ModelCode[]) {
   // DeepSeek 未上場時優先，否則 GPT-4o，否則人工
   if (!contenders.includes('DS')) return 'DeepSeek';
   return 'GPT-4o';
 }
 
-// Left-edge swipe gesture
+/** 左緣滑動開抽屜／向左滑關閉（行動裝置） */
 function useEdgeSwipe(opts: { onOpen: () => void; onClose: () => void; isOpen: boolean }) {
   useEffect(() => {
     let startX = 0, startY = 0, tracking = false, opened = opts.isOpen;
@@ -286,7 +306,7 @@ function useEdgeSwipe(opts: { onOpen: () => void; onClose: () => void; isOpen: b
       if (!isMobile) return;
 
       opened = opts.isOpen;
-      // 若未開，左緣 18px 內起手；若已開，抽屜右緣 20% 區域起手
+      // 若未開，左緣 18px 內起手；若已開，抽屜右緣 25% 內起手
       const nearEdge = !opened ? t.clientX < 18 : t.clientX > w * 0.75;
       if (!nearEdge) return;
 
