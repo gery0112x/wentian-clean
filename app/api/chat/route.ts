@@ -1,63 +1,115 @@
 // app/api/chat/route.ts
-import type { NextRequest } from 'next/server';
+// 最短可用：直連 OpenAI，並把用量寫入 Supabase 的 _io_gate_logs
+export const runtime = "nodejs"; // 保證用 Node runtime（避免 Edge 限制）
 
-export const runtime = 'nodejs';
+type Usage = { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
 
-type Msg = { role: 'system' | 'user' | 'assistant'; content: string };
-
-function envOrDie(name: string, fallback?: string) {
-  const v = process.env[name] ?? fallback;
-  if (!v) throw new Error(`Missing env: ${name}`);
-  return v;
+function pickProvider(): "OPENAI" | "UNSUPPORTED" {
+  const enabled = (process.env.WUJI_PROVIDERS_ENABLED || "OPENAI")
+    .split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+  const order = (process.env.WUJI_PROVIDER_ORDER || "OPENAI")
+    .split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+  for (const p of order) {
+    if (!enabled.includes(p)) continue;
+    if (p === "OPENAI" && process.env.OPENAI_API_KEY) return "OPENAI";
+  }
+  return "UNSUPPORTED";
 }
 
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL ?? 'https://api.openai.com/v1';
-const OPENAI_API_KEY  = envOrDie('OPENAI_API_KEY');
-const OPENAI_MODEL    = process.env.OPENAI_MODEL ?? 'gpt-4o-2024-08-06';
+async function callOpenAI(messages: any[], model = "gpt-4o-mini") {
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ model, messages, temperature: 0.2 })
+  });
+  const json: any = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = typeof json === "object" ? json : { error: String(json) };
+    throw new Error(`OPENAI_${r.status}: ${JSON.stringify(err)}`);
+  }
+  const text = json?.choices?.[0]?.message?.content ?? "";
+  const usage: Usage = json?.usage ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
+  const usedModel: string = json?.model ?? model;
+  return { text, usage, model: usedModel, raw: json };
+}
 
-export async function POST(req: NextRequest) {
+async function writeGateLog(args: {
+  provider: string; model: string; usage: Usage; status: string; meta?: any;
+}) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  const rid = (globalThis as any).crypto?.randomUUID?.() ?? `${Date.now()}-wuji`;
+
+  const row = {
+    ts: new Date().toISOString(),
+    user_id: "wuji-app",
+    route: process.env.WUJI_GATE_PATH || "/api/chat",
+    provider: args.provider,
+    model: args.model,
+    tokens_in: Number(args.usage.prompt_tokens || 0),
+    tokens_out: Number(args.usage.completion_tokens || 0),
+    cost: 0, // 先記 0；之後可按模型單價估算
+    status: args.status,
+    request_id: rid,
+    meta: args.meta ?? null
+  };
+
+  await fetch(`${url}/rest/v1/_io_gate_logs`, {
+    method: "POST",
+    headers: {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      Prefer: "return=minimal"
+    },
+    body: JSON.stringify(row)
+  }).catch(() => {});
+}
+
+async function handle(req: Request) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const inputMessages: Msg[] = Array.isArray(body?.messages) ? body.messages : [];
-    const system: Msg = {
-      role: 'system',
-      content: '你在一個工業平台中回覆：先由後台（白話提案模組）判斷是否接手；未接手再走一般聊天。回覆請精簡清楚。'
-    };
-
-    const payload = {
-      model: body?.model ?? OPENAI_MODEL,
-      messages: [system, ...inputMessages],
-    };
-
-    const r = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'authorization': `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify(payload),
-    });
-
-    if (!r.ok) {
-      const errText = await r.text().catch(() => '');
+    const provider = pickProvider();
+    if (provider === "UNSUPPORTED") {
       return Response.json(
-        { ok: false, error: `upstream ${r.status}: ${errText}` },
-        { status: 500 },
+        { error: "No supported provider available. Enable OPENAI with OPENAI_API_KEY." },
+        { status: 501 }
       );
     }
 
-    const data = await r.json();
-    const content: string =
-      data?.choices?.[0]?.message?.content ??
-      data?.choices?.[0]?.delta?.content ??
-      '';
+    // 兩種用法：GET ?q=...；或 POST { messages:[...] , model? }
+    let messages: any[] = [];
+    let model = "gpt-4o-mini";
 
-    return Response.json({
-      ok: true,
-      message: { role: 'assistant', content },
-      usage: data?.usage ?? null,
-    });
+    if (req.method === "GET") {
+      const url = new URL(req.url);
+      const q = url.searchParams.get("q") || "Say hello.";
+      messages = [{ role: "user", content: q }];
+    } else if (req.method === "POST") {
+      const body = await req.json().catch(() => ({}));
+      if (Array.isArray(body?.messages)) messages = body.messages;
+      if (typeof body?.model === "string" && body.model) model = body.model;
+      if (messages.length === 0) {
+        return Response.json({ error: "messages[] required" }, { status: 400 });
+      }
+    } else {
+      return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } });
+    }
+
+    const result = await callOpenAI(messages, model);
+    await writeGateLog({ provider: "OPENAI", model: result.model, usage: result.usage, status: "ok", meta: { from: "api/chat" } });
+
+    return Response.json({ provider: "OPENAI", model: result.model, usage: result.usage, reply: result.text }, { status: 200 });
   } catch (e: any) {
-    return Response.json({ ok: false, error: String(e?.message ?? e) }, { status: 500 });
+    await writeGateLog({
+      provider: "OPENAI", model: "unknown",
+      usage: { prompt_tokens: 0, completion_tokens: 0 },
+      status: "error", meta: { error: e?.message || String(e) }
+    }).catch(() => {});
+    return Response.json({ error: e?.message || String(e) }, { status: 500 });
   }
 }
+
+export { handle as GET, handle as POST };
