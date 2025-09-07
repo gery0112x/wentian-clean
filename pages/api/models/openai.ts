@@ -1,72 +1,98 @@
+// pages/api/models/openai.ts
 import type { NextApiRequest, NextApiResponse } from 'next'
 import { createClient } from '@supabase/supabase-js'
 import OpenAI from 'openai'
 
-/** 中文：環境變數（英文名附中文）
- * SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY：Supabase 服務端連線金鑰（只有後端用）
- * OPENAI_API_KEY：OpenAI 金鑰
- * WUJI_FX_USD_TWD：美元→台幣匯率（預設 32）
- * WUJI_CURRENCY：幣別（預設 NTD）
- */
-const supa = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!
-)
+const SUPABASE_URL = process.env.SUPABASE_URL
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY
+const WUJI_CURRENCY = (process.env.WUJI_CURRENCY || 'NTD').toUpperCase()
+const FX = Number(process.env.WUJI_FX_USD_TWD || 32)
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+const supa = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+  : null
 
-// 估價（中文）：非常粗略，只供展示
+const openai = OPENAI_API_KEY ? new OpenAI({ apiKey: OPENAI_API_KEY }) : null
+
 function estimateCostUSD(tokensIn = 0, tokensOut = 0, model = 'gpt-4o-mini') {
-  // 單價（USD / 百萬 token）
-  const priceTable: Record<string, { in: number; out: number }> = {
+  const price: Record<string, { in: number; out: number }> = {
     'gpt-4o-mini': { in: 0.15, out: 0.60 },
   }
-  const p = priceTable[model] || priceTable['gpt-4o-mini']
+  const p = price[model] || price['gpt-4o-mini']
   return (tokensIn / 1_000_000) * p.in + (tokensOut / 1_000_000) * p.out
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') return res.status(405).json({ ok: false, error: '只允許 POST' })
+async function safeLog(meta: any) {
+  try {
+    if (!supa) return
+    await supa.from('ops.io_gate_logs').insert({
+      route: '/models/openai',
+      provider: 'OPENAI',
+      model: meta?.model || 'gpt-4o-mini',
+      tokens_in: meta?.usage?.input_tokens || 0,
+      tokens_out: meta?.usage?.output_tokens || 0,
+      usd_cost: meta?.usd_cost || 0,
+      currency: WUJI_CURRENCY,
+      cost_local: meta?.cost_local || 0,
+      status: meta?.status || 'ok',
+      request_id: meta?.request_id || null,
+      meta
+    })
+  } catch {}
+}
 
-  const currency = (process.env.WUJI_CURRENCY || 'NTD').toUpperCase()
-  const fx = Number(process.env.WUJI_FX_USD_TWD || 32)
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  // 允許用 GET 做診斷（你用瀏覽器就能看）
+  if (req.method === 'GET') {
+    const diag = {
+      ok: true,
+      mode: 'diagnostic',
+      env: {
+        SUPABASE_URL: !!SUPABASE_URL,
+        SUPABASE_SERVICE_ROLE_KEY: !!SUPABASE_SERVICE_ROLE_KEY,
+        OPENAI_API_KEY: !!OPENAI_API_KEY,
+        WUJI_CURRENCY,
+        FX
+      }
+    }
+    return res.status(200).json(diag)
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ ok: false, error: '只允許 POST（GET 為診斷模式）' })
+  }
+
+  // 環境檢查（缺什麼就明講）
+  const missing: string[] = []
+  if (!SUPABASE_URL) missing.push('SUPABASE_URL')
+  if (!SUPABASE_SERVICE_ROLE_KEY) missing.push('SUPABASE_SERVICE_ROLE_KEY')
+  if (!OPENAI_API_KEY) missing.push('OPENAI_API_KEY')
+  if (missing.length) {
+    await safeLog({ status: 'error', why: 'env_missing', missing })
+    return res.status(200).json({ ok: false, error: '環境變數缺少', missing })
+  }
 
   try {
     const { messages = [], model = 'gpt-4o-mini' } = req.body || {}
-    if (!Array.isArray(messages)) return res.status(400).json({ ok: false, error: 'messages 需要陣列' })
-    if (!process.env.OPENAI_API_KEY) return res.status(500).json({ ok: false, error: '缺 OPENAI_API_KEY' })
+    if (!Array.isArray(messages)) {
+      return res.status(200).json({ ok: false, error: 'messages 需要陣列' })
+    }
 
-    const start = Date.now()
-    const completion = await openai.chat.completions.create({
-      model,
-      messages,
-    })
+    const t0 = Date.now()
+    const completion = await openai!.chat.completions.create({ model, messages })
     const reply = completion.choices?.[0]?.message?.content || ''
-    // OpenAI 使用量（有些模型不回 tokens，這裡做保底）
     const usage = {
       input_tokens: completion.usage?.prompt_tokens ?? 0,
       output_tokens: completion.usage?.completion_tokens ?? Math.max(20, Math.ceil(reply.length / 3)),
       total_tokens: completion.usage?.total_tokens ?? 0,
-      ms: Date.now() - start,
+      ms: Date.now() - t0,
     }
-    const usd = estimateCostUSD(usage.input_tokens, usage.output_tokens, model)
-    const cost_local = Math.round(usd * fx * 100) / 100
-
-    // 寫入審計（ops.io_gate_logs）
+    const usd_cost = estimateCostUSD(usage.input_tokens, usage.output_tokens, model)
+    const cost_local = Math.round(usd_cost * FX * 100) / 100
     const request_id = completion.id || `openai_${Date.now()}`
-    await supa.from('ops.io_gate_logs').insert({
-      route: '/models/openai',
-      provider: 'OPENAI',
-      model,
-      tokens_in: usage.input_tokens,
-      tokens_out: usage.output_tokens,
-      usd_cost: usd,
-      currency,
-      cost_local,
-      status: 'ok',
-      request_id,
-      meta: { ms: usage.ms }
-    })
+
+    await safeLog({ status: 'ok', model, usage, usd_cost, cost_local, request_id })
 
     return res.status(200).json({
       ok: true,
@@ -74,20 +100,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       model,
       reply,
       usage,
-      currency,
+      currency: WUJI_CURRENCY,
       cost_local,
-      request_id,
+      request_id
     })
   } catch (e: any) {
     const msg = String(e?.message || e)
-    await supa.from('ops.io_gate_logs').insert({
-      route: '/models/openai',
-      provider: 'OPENAI',
-      model: req.body?.model || 'gpt-4o-mini',
-      status: 'error',
-      currency: (process.env.WUJI_CURRENCY || 'NTD').toUpperCase(),
-      meta: { err: msg }
-    })
-    return res.status(500).json({ ok: false, error: msg })
+    await safeLog({ status: 'error', err: msg, model: req.body?.model })
+    return res.status(200).json({ ok: false, error: msg })
   }
 }
