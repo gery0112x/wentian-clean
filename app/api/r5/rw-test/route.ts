@@ -71,30 +71,50 @@ async function vercelRW() {
   const pJson = await pRes.json().catch(()=> ({}));
   const canRead = pRes.ok && !!pJson?.id;
 
-  // write env: 必須帶 type:"encrypted"
-  const name = "R5_RW_TEST";
+  // write env
+  const key = "R5_RW_TEST";
   const value = `ok-${Date.now()}`;
   const addRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env${qs}`, {
     method: "POST",
     headers: h,
-    body: j({ key: name, value, target: ["production"], type: "encrypted" }),
+    body: j({ key, value, target: ["production"], type: "encrypted" }),
   });
   const addJson = await addRes.json().catch(()=> ({}));
-  const addOk = addRes.ok && !!addJson?.id;
+  const addOk = addRes.status === 201 && !!addJson?.id;
 
-  // delete
-  let delOk = false, delJson:any=null;
-  if (addOk) {
-    const delRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${addJson.id}${qs}`, {
+  // delete (雙保險)
+  let delOk = false;
+  const delSteps:any[] = [];
+
+  // 1) 先嘗試用 create 回傳的 id 刪
+  if (addOk && addJson?.id) {
+    const del1 = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${addJson.id}${qs}`, {
       method: "DELETE", headers: h
     });
-    delOk = delRes.ok; delJson = await delRes.json().catch(()=> ({}));
+    delSteps.push({ by:"create-id", status: del1.status });
+    if (del1.ok) delOk = true;
+  }
+
+  // 2) 若失敗，再列出全部 env，用 key=R5_RW_TEST 全刪
+  if (!delOk) {
+    const list = await fetch(`https://api.vercel.com/v9/projects/${projectId}/env${qs}`, { headers: h });
+    const listJson = await list.json().catch(()=> ({}));
+    const envs: any[] = listJson?.envs || [];
+    const targets = envs.filter(e => e?.key === key).map(e => e.id).filter(Boolean);
+
+    for (const id of targets) {
+      const del2 = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${id}${qs}`, {
+        method: "DELETE", headers: h
+      });
+      delSteps.push({ by:"list-key", id, status: del2.status });
+      if (del2.ok) delOk = true;
+    }
   }
 
   return {
     ok: canRead && addOk && delOk,
     canRead, addOk, delOk,
-    detail: { pStatus: pRes.status, addStatus: addRes.status, delOk, delJson, teamIdUsed: !!teamId }
+    detail: { pStatus: pRes.status, addStatus: addRes.status, delSteps, teamIdUsed: !!teamId }
   };
 }
 
