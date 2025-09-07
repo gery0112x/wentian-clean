@@ -15,11 +15,10 @@ export async function GET(req: Request) {
     const kind = (url.searchParams.get("kind") ?? "baseline") as "baseline" | "release";
 
     const supabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!;
-    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-    // 關鍵：把資料庫 schema 指到 gov
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!; // 服務角色金鑰（只給伺服端）
     const supa = createClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false, autoRefreshToken: false },
-      db: { schema: "gov" },
+      // ⚠️ 不要設定 db.schema，預設就是 public
     });
 
     const row = {
@@ -31,9 +30,10 @@ export async function GET(req: Request) {
       notes: "auto-tag",
     };
 
+    // 操作 public.release_tags（其實寫 'release_tags' 即可）
     const { data, error } = await supa
       .from("release_tags")
-      .upsert(row, { onConflict: "tag" }) // 再按一次也不會重複報錯
+      .upsert(row, { onConflict: "tag" })    // 同 tag 再登記不會重複報錯
       .select("tag, kind, vercel_commit_sha, vercel_branch, created_at")
       .single();
 
