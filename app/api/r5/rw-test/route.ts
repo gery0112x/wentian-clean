@@ -1,14 +1,15 @@
 import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
-// 小工具
+// utils
 const j = (x:any)=>JSON.stringify(x);
 const b64 = (s:string)=>Buffer.from(s,"utf8").toString("base64");
 const nowIso = ()=>new Date().toISOString();
 
+// ---------- GitHub ----------
 async function ghRW() {
   const token = process.env.GITHUB_TOKEN;
-  const repo  = process.env.GITHUB_REPO; // 形式：owner/name
+  const repo  = process.env.GITHUB_REPO; // owner/name
   if (!token || !repo) return { ok:false, skipped:true, hint:"缺 GITHUB_TOKEN 或 GITHUB_REPO" };
 
   const headers = {
@@ -17,12 +18,12 @@ async function ghRW() {
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  // 讀
+  // read
   const metaRes = await fetch(`https://api.github.com/repos/${repo}`, { headers });
   const meta = await metaRes.json();
   const canRead = metaRes.ok && meta?.full_name === repo;
 
-  // 寫（建 → 刪）
+  // write (create -> delete)
   const path = `ops/r5_rw_test_${Date.now()}.json`;
   const putRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`, {
     method: "PUT",
@@ -36,7 +37,6 @@ async function ghRW() {
   const createdSha = putJson?.content?.sha;
   const createdOk  = putRes.ok && !!createdSha;
 
-  // 刪（若建成功）
   let delOk = false, delJson:any = null;
   if (createdOk) {
     const delRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`, {
@@ -56,32 +56,36 @@ async function ghRW() {
   };
 }
 
+// ---------- Vercel ----------
 async function vercelRW() {
   const token = process.env.VERCEL_TOKEN || process.env.VERCEL_API_TOKEN;
   const projectId = process.env.VERCEL_PROJECT_ID;
+  const teamId = process.env.VERCEL_TEAM_ID || ""; // 可選
   if (!token || !projectId) return { ok:false, skipped:true, hint:"缺 VERCEL_TOKEN 或 VERCEL_PROJECT_ID" };
 
   const h = { Authorization: `Bearer ${token}`, "Content-Type":"application/json" };
+  const qs = teamId ? `?teamId=${encodeURIComponent(teamId)}` : "";
 
-  // 讀：抓專案資訊
-  const pRes = await fetch(`https://api.vercel.com/v9/projects/${projectId}`, { headers: h });
-  const pJson = await pRes.json();
+  // read project
+  const pRes = await fetch(`https://api.vercel.com/v9/projects/${projectId}${qs}`, { headers: h });
+  const pJson = await pRes.json().catch(()=> ({}));
   const canRead = pRes.ok && !!pJson?.id;
 
-  // 寫：新增 env → 刪除
+  // write env: 必須帶 type:"encrypted"
   const name = "R5_RW_TEST";
   const value = `ok-${Date.now()}`;
-  const addRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env`, {
+  const addRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env${qs}`, {
     method: "POST",
     headers: h,
-    body: j({ key: name, value, target: ["production"] }),
+    body: j({ key: name, value, target: ["production"], type: "encrypted" }),
   });
-  const addJson = await addRes.json();
+  const addJson = await addRes.json().catch(()=> ({}));
   const addOk = addRes.ok && !!addJson?.id;
 
+  // delete
   let delOk = false, delJson:any=null;
   if (addOk) {
-    const delRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${addJson.id}`, {
+    const delRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${addJson.id}${qs}`, {
       method: "DELETE", headers: h
     });
     delOk = delRes.ok; delJson = await delRes.json().catch(()=> ({}));
@@ -90,10 +94,11 @@ async function vercelRW() {
   return {
     ok: canRead && addOk && delOk,
     canRead, addOk, delOk,
-    detail: { pStatus: pRes.status, addStatus: addRes.status, delOk, delJson }
+    detail: { pStatus: pRes.status, addStatus: addRes.status, delOk, delJson, teamIdUsed: !!teamId }
   };
 }
 
+// ---------- Supabase ----------
 async function supaRW() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -101,11 +106,11 @@ async function supaRW() {
 
   const h = { apikey: key, Authorization: `Bearer ${key}`, "Content-Type":"application/json" };
 
-  // 讀：抓 release_tags 1 筆
+  // read
   const r1 = await fetch(`${url}/rest/v1/gov.release_tags?select=*&limit=1`, { headers: h });
   const canRead = r1.ok;
 
-  // 寫：塞一筆 probe
+  // write (keep for audit)
   const payload = [{
     tag: `r5-rw-${Date.now()}`,
     kind: "probe",
@@ -137,7 +142,6 @@ export async function GET(req: Request) {
   if (who === "all" || who === "vercel")  out.results.vercel  = await vercelRW().catch(e=>({ ok:false, error:String(e) }));
   if (who === "all" || who === "supabase") out.results.supabase= await supaRW().catch(e=>({ ok:false, error:String(e) }));
 
-  // 總結
   const oks = Object.values(out.results).map((r:any)=>!!r?.ok);
   out.ok = oks.length>0 && oks.every(Boolean);
 
