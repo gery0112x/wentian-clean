@@ -8,11 +8,11 @@ export async function GET() {
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
     const supa = createClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false, autoRefreshToken: false },
-      db: { schema: "gov" }, // 關鍵：使用 gov schema
+      // ⚠️ 保持預設（public）
     });
 
     const { data, error } = await supa
-      .from("release_tags")
+      .from("release_tags") // public.release_tags（view 橋接至 gov.release_tags）
       .select("created_at, tag, kind, vercel_commit_sha, vercel_branch")
       .order("created_at", { ascending: false })
       .limit(10);
