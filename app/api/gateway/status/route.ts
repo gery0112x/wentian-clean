@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 export const runtime = "nodejs";
-import { createClient } from "@supabase/supabase-js";
 
+// 小白註解：把字串是否存在變成布林
 const b = (x?: string) => !!x && x.trim() !== "";
 
-export async function GET() {
+export async function GET(req: Request) {
+  // 讀你現成的治理變數（已存在於 Vercel）
   const providers_enabled = (process.env.WUJI_PROVIDERS_ENABLED || "")
     .split(",").map(s=>s.trim()).filter(Boolean);
   const provider_order = (process.env.WUJI_PROVIDER_ORDER || "")
@@ -33,31 +34,31 @@ export async function GET() {
     (keys_present.openai || keys_present.deepseek || keys_present.gemini || keys_present.grok || keys_present.xai)
     && supabase_ok.service_role;
 
-  // 寫入一筆日誌（沿用你現有的 _io_gate_logs 規則）
-  let db_insert_ok = false, io_id: number | null = null, db_error: string | null = null;
+  // 不再直接寫 _io_gate_logs，改「借用你已經 PASS 的 /api/wuji-check」
+  let db_insert_ok_from_wuji_check = false;
+  let io_id: number | null = null;
   try {
-    if (gateway_ok) {
-      const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL!;
-      const key = process.env.SUPABASE_SERVICE_ROLE_KEY!;
-      const supa = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
-      const { data, error } = await supa
-        .from("_io_gate_logs")
-        .insert({ path: "/api/gateway/status", status: "probe", meta: { providers_enabled, provider_order, caps } })
-        .select("id").single();
-      if (error) throw error;
-      db_insert_ok = true; io_id = data?.id ?? null;
+    const base = new URL(req.url).origin;              // 產生同站網址
+    const res = await fetch(`${base}/api/wuji-check`, { cache: "no-store" });
+    if (res.ok) {
+      const j = await res.json();
+      db_insert_ok_from_wuji_check = !!j?.db_insert_ok;
+      io_id = j?.io_id ?? null;
     }
-  } catch (e: any) { db_error = e?.message ?? "unknown"; }
+  } catch {}
 
   return NextResponse.json({
-    gateway_ok,                // 代轉層是否基本可用
-    providers_enabled,         // 已啟用供應商清單
-    provider_order,            // 呼叫順序
-    caps,                      // 上蓋（回合/日/月）
-    keys_present,              // 各家金鑰是否存在（true/false）
-    supabase_ok,               // DB 變數是否就緒
-    db_insert_ok, io_id, db_error,
+    gateway_ok,
+    providers_enabled,
+    provider_order,
+    caps,
+    keys_present,
+    supabase_ok,
+    db_insert_ok_from_wuji_check, // 改看 wuji-check 的寫入結果
+    io_id,
     ts: new Date().toISOString(),
-    hint_zh: gateway_ok ? "代轉層可用；已寫入日誌" : "缺金鑰或缺服務角色金鑰(SUPABASE_SERVICE_ROLE_KEY)"
+    hint_zh: gateway_ok
+      ? "代轉層可用；/api/wuji-check 已可寫入日誌"
+      : "缺金鑰或缺 SUPABASE_SERVICE_ROLE_KEY（服務角色金鑰）"
   }, { status: 200 });
 }
