@@ -81,7 +81,7 @@ async function vercelRW() {
     const r = await fetch(`https://api.vercel.com/v9/projects/${projectId}/env${qs}`, { headers: h });
     const js = await r.json().catch(()=> ({}));
     return (js?.envs || []) as VercelEnv[];
-  };
+    };
   const delById = async (id:string) => {
     const r = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${id}${qs}`, { method:"DELETE", headers: h });
     return r.status;
@@ -97,20 +97,21 @@ async function vercelRW() {
     delSteps.push({ by:"pre-clean", id, status: st });
   }
 
-  // 1) 新增 env（type 一定要 encrypted）
+  // 1) 新增 env（注意 v10 回傳 { created:{ id,... }, failed:[] }）
   const addRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env${qs}`, {
     method: "POST",
     headers: h,
     body: j({ key, value, target: ["production"], type: "encrypted" }),
   });
   const addJson = await addRes.json().catch(()=> ({}));
-  const addOk = addRes.status === 201 && !!addJson?.id;
+  const createdId: string | undefined = addJson?.id || addJson?.created?.id;
+  const addOk = addRes.status === 201 && !!createdId;
 
-  // 2) 刪除剛新增的（先用回傳 id，若失敗再列出用 key 全刪）
+  // 2) 刪除剛新增的（先用 createdId，若失敗再列出用 key 全刪）
   let delOk = false;
-  if (addOk && addJson?.id) {
-    const st = await delById(addJson.id);
-    delSteps.push({ by:"create-id", id: addJson.id, status: st });
+  if (addOk && createdId) {
+    const st = await delById(createdId);
+    delSteps.push({ by:"create-id", id: createdId, status: st });
     if (st >= 200 && st < 300) delOk = true;
   }
   if (!delOk) {
@@ -129,6 +130,7 @@ async function vercelRW() {
     detail: {
       pStatus: pRes.status,
       addStatus: addRes.status,
+      createdId,
       addJson,
       preCleanCount: dupIds.length,
       delSteps,
