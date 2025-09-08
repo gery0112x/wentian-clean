@@ -1,275 +1,246 @@
 // app/api/r5/rw-test/route.ts
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-/**
- * R5 可讀可寫綜合測試
- * 支援 who=vercel | github | supabase
- * 參數：
- *   - guide=1   : 顯示環境變數檢核與指引（會遮罩機敏值）
- *
- * 需求的環境變數：
- *   VERCEL_PROJECT_ID, VERCEL_TOKEN
- *   GITHUB_REPO (e.g. "owner/repo"), GITHUB_BRANCH, GITHUB_TOKEN
- *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_SCHEMA
- *   R5_TEST_RELEASE_KIND (optional, default "baseline")
- */
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-
-type Json = Record<string, any>;
-
-const mask = (v?: string | null) =>
-  !v ? v : v.length <= 8 ? "***" : `${v.slice(0, 3)}${"*".repeat(v.length - 6)}${v.slice(-3)}`;
-
-const ok = (data: Json) =>
-  new Response(JSON.stringify(data, null, 2), { headers: { "content-type": "application/json; charset=utf-8" } });
-
-const nowTs = () => new Date().toISOString();
-
-/** --------------------------
- *  入口
- *  -------------------------*/
-export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const who = (url.searchParams.get("who") || "").toLowerCase().trim();
-  const showGuide = url.searchParams.get("guide") === "1";
-
-  // 共用：測試寫入 payload（修好：同時帶 kind 與 tag）
-  const testKind = process.env.R5_TEST_RELEASE_KIND ?? "baseline";
-  const testTag = `r5_${Date.now()}`;
-  const payload = [{ kind: testKind, tag: testTag }];
-
-  // guide 區：回傳環境檢核
-  const envEcho =
-    showGuide &&
-    {
-      vercel: {
-        VERCEL_PROJECT_ID: !!process.env.VERCEL_PROJECT_ID,
-        VERCEL_TOKEN: process.env.VERCEL_TOKEN ? "set(" + mask(process.env.VERCEL_TOKEN) + ")" : "missing",
-      },
-      github: {
-        GITHUB_REPO: process.env.GITHUB_REPO || "missing",
-        GITHUB_BRANCH: process.env.GITHUB_BRANCH || "missing",
-        GITHUB_TOKEN: process.env.GITHUB_TOKEN ? "set(" + mask(process.env.GITHUB_TOKEN) + ")" : "missing",
-      },
-      supabase: {
-        SUPABASE_URL: process.env.SUPABASE_URL || "missing",
-        SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY
-          ? "set(" + mask(process.env.SUPABASE_SERVICE_ROLE_KEY) + ")"
-          : "missing",
-        SUPABASE_SCHEMA: process.env.SUPABASE_SCHEMA || "missing",
-      },
-      "********************": "********************",
-    };
-
-  try {
-    if (who === "vercel") {
-      const results = await testVercelEnv(payload);
-      return ok({ ts: nowTs(), who, results, ...(envEcho ? { env: envEcho } : {}), ok: results?.vercel?.ok === true });
-    }
-
-    if (who === "github") {
-      const results = await testGithubWrite();
-      return ok({ ts: nowTs(), who, results, ...(envEcho ? { env: envEcho } : {}), ok: results?.github?.ok === true });
-    }
-
-    if (who === "supabase") {
-      const results = await testSupabaseRW(payload);
-      // 若缺 env，提供明確指南
-      let guide: any[] = [];
-      if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY || !process.env.SUPABASE_SCHEMA) {
-        guide.push({
-          title: "Supabase：缺環境變數",
-          todo: [
-            "到 Vercel → Settings → Environment Variables 新增：SUPABASE_URL、SUPABASE_SERVICE_ROLE_KEY、SUPABASE_SCHEMA",
-            "新增後觸發部署 (Redeploy)",
-          ],
-        });
-      }
-      return ok({
-        ts: nowTs(),
-        who,
-        results,
-        ...(envEcho ? { env: envEcho } : {}),
-        guide,
-        ok: results?.supabase?.ok === true,
-      });
-    }
-
-    // 沒帶 who 或無效
-    return ok({
-      ts: nowTs(),
-      who,
-      hint: '使用方式：/api/r5/rw-test?who=vercel|github|supabase（可加 guide=1 顯示環境檢核）',
-      ok: false,
-    });
-  } catch (err: any) {
-    return ok({
-      ts: nowTs(),
-      who,
-      error: String(err?.message ?? err),
-      ok: false,
-    });
-  }
-}
-
-/** --------------------------
- *  Vercel：新增 / 刪除專案環境變數
- *  -------------------------*/
-async function testVercelEnv(payload: any[]) {
-  const projectId = process.env.VERCEL_PROJECT_ID;
-  const token = process.env.VERCEL_TOKEN;
-
-  const out: Json = { vercel: { ok: false, canRead: false, addOk: false, delOk: false, detail: {} as any } };
-  if (!projectId || !token) {
-    out.vercel.detail = { hint: "缺 VERCEL_PROJECT_ID / VERCEL_TOKEN" };
-    return out;
-  }
-
-  const base = `https://api.vercel.com`;
-  const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
-
-  // 讀：列出 env
-  const listRes = await fetch(`${base}/v10/projects/${projectId}/env`, { headers });
-  out.vercel.canRead = listRes.ok;
-  out.vercel.detail = { pStatus: listRes.status };
-
-  // 加：建立一個 env
-  const key = "R5_RW_TEST";
-  const value = JSON.stringify({ createdAt: Date.now(), key: "R5_RW_TEST", payloadLen: payload.length });
-  const addRes = await fetch(`${base}/v10/projects/${projectId}/env`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ key, value, type: "encrypted", target: ["production"] }),
+// 小工具：讀 env（簡單檢查）
+const need = (k: string) => {
+  const v = process.env[k];
+  return v && v.trim().length > 0 ? v.trim() : null;
+};
+const json = (o: any, status = 200) =>
+  new NextResponse(JSON.stringify(o, null, 2), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
   });
-  out.vercel.addOk = addRes.ok;
-  out.vercel.detail.addStatus = addRes.status;
 
-  let createdId: string | undefined;
-  if (addRes.ok) {
-    const j = await addRes.json().catch(() => ({}));
-    createdId = j?.id;
-    out.vercel.detail.created = j;
-  }
+// -------- Vercel RW 測試（修正重點在這裡） --------
+async function vercelRWTest() {
+  const projectId = need("VERCEL_PROJECT_ID"); // prj_xxx
+  const bearer = need("VERCEL_TOKEN");         // 個人 Access Token
+  const teamId = need("VERCEL_TEAM_ID");       // 團隊用，可省略
+  const now = new Date().toISOString();
+  const key = "R5_RW_TEST";
+  const value = `ok@${now}`;
+  const query = new URLSearchParams();
+  query.set("upsert", "true");
+  if (teamId) query.set("teamId", teamId);
 
-  // 刪：若剛剛新增成功就刪掉
-  if (createdId) {
-    const delRes = await fetch(`${base}/v9/projects/${projectId}/env/${createdId}`, {
-      method: "DELETE",
-      headers,
-    });
-    out.vercel.delOk = delRes.ok;
-    out.vercel.detail.delStatus = delRes.status;
-  }
-
-  out.vercel.ok = !!(out.vercel.canRead && out.vercel.addOk);
-  return out;
-}
-
-/** --------------------------
- *  GitHub：新增檔案（可讀可寫）
- *  -------------------------*/
-async function testGithubWrite() {
-  const repo = process.env.GITHUB_REPO; // e.g. "owner/repo"
-  const branch = process.env.GITHUB_BRANCH || "main";
-  const token = process.env.GITHUB_TOKEN;
-
-  const out: Json = { github: { ok: false, canRead: false, createdOk: false, delOk: false, detail: {} as any } };
-  if (!repo || !token) {
-    out.github.detail = { hint: "缺 GITHUB_REPO / GITHUB_TOKEN（可選 GITHUB_BRANCH）" };
-    return out;
-  }
-
-  const base = `https://api.github.com`;
+  const base = "https://api.vercel.com";
   const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "Content-Type": "application/json",
+    Authorization: `Bearer ${bearer}`,
+    "content-type": "application/json",
   };
 
-  // 讀：取 repo 基本資訊
-  const repoRes = await fetch(`${base}/repos/${repo}`, { headers });
-  out.github.canRead = repoRes.ok;
-
-  const path = `ops/r5_rw_test_${Date.now()}.json`;
-  const content = Buffer.from(
-    JSON.stringify({ ts: nowTs(), msg: "R5 RW TEST", branch }, null, 2),
-    "utf8"
-  ).toString("base64");
-
-  // 寫：PUT 內容
-  const put = await fetch(`${base}/repos/${repo}/contents/${encodeURIComponent(path)}`, {
-    method: "PUT",
-    headers,
-    body: JSON.stringify({ message: "r5 rw test", content, branch }),
-  });
-
-  out.github.createdOk = put.status === 201 || put.status === 200;
-  const putJson = await put.json().catch(() => ({}));
-  out.github.detail.putJson = putJson;
-
-  // 後清：若需要可刪，但 GitHub 刪檔需要先查 sha，這裡只示範建立成功即可
-  out.github.ok = !!(out.github.canRead && out.github.createdOk);
-  return out;
-}
-
-/** --------------------------
- *  Supabase（REST）：select + insert
- *  -------------------------*/
-async function testSupabaseRW(payload: Array<{ kind: string; tag: string }>) {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const schema = process.env.SUPABASE_SCHEMA || "public";
-
-  const out: Json = { supabase: { ok: false, canRead: false, addOk: false, detail: {} as any } };
-  if (!url || !key) {
-    out.supabase.detail = { hint: "缺 SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY" };
-    return out;
+  const missing: string[] = [];
+  if (!projectId) missing.push("VERCEL_PROJECT_ID");
+  if (!bearer) missing.push("VERCEL_TOKEN");
+  if (missing.length) {
+    return {
+      ok: false,
+      guide: [
+        "缺環境變數：" + missing.join(", "),
+        "若專案屬於團隊，請在環境變數加 VERCEL_TEAM_ID 並重佈署",
+        "此端點已自動帶 upsert=true，可重複寫入同一 key",
+      ],
+      results: { vercel: { ok: false } },
+    };
   }
 
-  // 讀：/rest/v1/{table}?select=...
-  const table = "release_tags";
-  const readRes = await fetch(`${url}/rest/v1/${table}?select=id&limit=1`, {
-    headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      Accept: "application/json",
-      // 指定 schema：讀用 Accept-Profile
-      "Accept-Profile": schema,
-    },
+  // 1) 讀專案（驗讀權限）
+  const projUrl = `${base}/v10/projects/${encodeURIComponent(projectId)}${
+    query.toString() ? `?${query.toString()}` : ""
+  }`;
+  const pRes = await fetch(projUrl, { headers });
+  const pStatus = pRes.status;
+
+  // 2) 寫環境變數（修正：一定帶 type + target；可選 teamId；upsert=true）
+  const envUrl = `${base}/v10/projects/${encodeURIComponent(projectId)}/env${
+    query.toString() ? `?${query.toString()}` : ""
+  }`;
+  const body = {
+    key,
+    value,
+    // Vercel 文件要求：必帶 type 與 target；示例可用 "plain"；敏感資訊可用 "sensitive"
+    // https://vercel.com/docs/rest-api/reference/endpoints/projects/create-one-or-more-environment-variables
+    type: "plain",
+    target: ["production", "preview"], // 也可含 "development"
+    // gitBranch: 可選：若 target 包含 preview 且想綁特定分支再填
+    comment: "r5 rw-test",
+  };
+  const aRes = await fetch(envUrl, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
   });
-
-  let readBody: any = null;
+  const addStatus = aRes.status;
+  let addBody: any = null;
   try {
-    readBody = await readRes.json();
-  } catch {}
-  out.supabase.canRead = readRes.ok;
-  out.supabase.detail.readStatus = readRes.status;
-  if (readBody) out.supabase.detail.readBody = readBody;
+    addBody = await aRes.json();
+  } catch (_) {}
 
-  // 寫：insert（修好：同時帶 kind 與 tag，kind 預設 baseline）
-  const writeRes = await fetch(`${url}/rest/v1/${table}`, {
+  return {
+    ok: pStatus === 200 && (addStatus === 201 || addStatus === 200),
+    results: {
+      vercel: {
+        ok: addStatus === 201 || addStatus === 200,
+        canRead: pStatus === 200,
+        addOK: addStatus === 201 || addStatus === 200,
+        delOK: false,
+        detail: { pStatus, addStatus, addBody },
+      },
+    },
+  };
+}
+
+// -------- GitHub RW 測試（沿用：建立檔案 + 回讀 commit） --------
+async function githubRWTest() {
+  const repo = need("GITHUB_REPO"); // 例：gery0112x/wentian-clean
+  const branch = need("GITHUB_BRANCH") || "main";
+  const token = need("GITHUB_TOKEN");
+  const [owner, name] = (repo || "").split("/");
+  const missing: string[] = [];
+  if (!owner || !name) missing.push("GITHUB_REPO");
+  if (!token) missing.push("GITHUB_TOKEN");
+  if (missing.length) {
+    return {
+      ok: false,
+      guide: ["缺環境變數：" + missing.join(", ")],
+      results: { github: { ok: false } },
+    };
+  }
+
+  const ts = Date.now();
+  const path = `ops/r5_rw_test_${ts}.json`;
+  const content = Buffer.from(JSON.stringify({ ts, ok: true }, null, 2)).toString("base64");
+
+  // PUT /repos/{owner}/{repo}/contents/{path}
+  const putUrl = `https://api.github.com/repos/${owner}/${name}/contents/${encodeURIComponent(
+    path
+  )}`;
+  const commonHeaders = {
+    Authorization: `Bearer ${token}`,
+    "content-type": "application/json",
+    "user-agent": "r5-rw-test",
+    Accept: "application/vnd.github+json",
+  };
+
+  const putRes = await fetch(putUrl, {
+    method: "PUT",
+    headers: commonHeaders,
+    body: JSON.stringify({
+      message: `r5 rw-test ${ts}`,
+      content,
+      branch,
+    }),
+  });
+  const putOk = putRes.status === 201 || putRes.status === 200;
+  const putBody = await putRes.json().catch(() => ({} as any));
+
+  // 讀回最新 commit
+  const commitSha = putBody?.commit?.sha;
+  let commitBody: any = null;
+  if (commitSha) {
+    const cUrl = `https://api.github.com/repos/${owner}/${name}/commits/${commitSha}`;
+    const cRes = await fetch(cUrl, { headers: commonHeaders });
+    commitBody = await cRes.json().catch(() => ({} as any));
+  }
+
+  return {
+    ok: putOk,
+    results: {
+      github: {
+        ok: putOk,
+        path,
+        commit: commitBody,
+      },
+    },
+  };
+}
+
+// -------- Supabase RW 測試（沿用：讀 id=1 + 插入一筆） --------
+async function supabaseRWTest() {
+  const url = need("SUPABASE_URL");
+  const svcKey = need("SUPABASE_SERVICE_ROLE_KEY");
+  const schema = need("SUPABASE_SCHEMA") || "gov";
+  const table = `${schema}.release_tags`;
+
+  const missing: string[] = [];
+  if (!url) missing.push("SUPABASE_URL");
+  if (!svcKey) missing.push("SUPABASE_SERVICE_ROLE_KEY");
+  if (missing.length) {
+    return {
+      ok: false,
+      guide: ["缺環境變數：" + missing.join(", ")],
+      results: { supabase: { ok: false } },
+    };
+  }
+
+  // 讀 id=1
+  const r1 = await fetch(`${url}/rest/v1/${table}?id=eq.1&select=id`, {
+    headers: { apikey: svcKey, Authorization: `Bearer ${svcKey}` },
+  });
+  const readStatus = r1.status;
+  const readBody = await r1.json().catch(() => []);
+
+  // insert 一筆
+  const payload = {
+    kind: process.env.R5_TEST_RELEASE_KIND || "baseline",
+    tag: `r5_${Date.now()}`,
+  };
+  const r2 = await fetch(`${url}/rest/v1/${table}`, {
     method: "POST",
     headers: {
-      apikey: key,
-      Authorization: `Bearer ${key}`,
-      "Content-Type": "application/json",
+      apikey: svcKey,
+      Authorization: `Bearer ${svcKey}`,
+      "content-type": "application/json",
       Prefer: "return=representation",
-      // 指定 schema：寫用 Content-Profile
-      "Content-Profile": schema,
     },
     body: JSON.stringify(payload),
   });
+  const writeStatus = r2.status;
+  const writeBody = await r2.json().catch(() => []);
 
-  let writeBody: any = null;
-  try {
-    writeBody = await writeRes.json();
-  } catch {}
-  out.supabase.addOk = writeRes.status === 201 || writeRes.status === 200;
-  out.supabase.detail.writeStatus = writeRes.status;
-  out.supabase.detail.writeBody = writeBody;
+  return {
+    ok: readStatus === 200 && (writeStatus === 201 || writeStatus === 200),
+    results: {
+      supabase: {
+        ok: writeStatus === 201 || writeStatus === 200,
+        canRead: readStatus === 200,
+        addOK: writeStatus === 201 || writeStatus === 200,
+        detail: { readStatus, readBody, writeStatus, writeBody },
+      },
+    },
+  };
+}
 
-  out.supabase.ok = !!(out.supabase.canRead && out.supabase.addOk);
-  return out;
+// -------- 路由入口 --------
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const who = (searchParams.get("who") || "").toLowerCase();
+  const ts = new Date().toISOString();
+
+  if (who === "vercel") {
+    const r = await vercelRWTest();
+    return json({ ts, who: "vercel", ...r });
+  }
+  if (who === "github") {
+    const r = await githubRWTest();
+    return json({ ts, who: "github", ...r });
+  }
+  if (who === "supabase") {
+    const r = await supabaseRWTest();
+    return json({ ts, who: "supabase", ...r });
+  }
+
+  // 指南
+  return json({
+    ts,
+    who,
+    ok: false,
+    guide: [
+      "使用方式：/api/r5/rw-test?who=vercel|github|supabase",
+      "vercel：會讀專案 + 新增環境變數（upsert=true）",
+      "github：會在 ops/ 下建立 r5_rw_test_<ts>.json 並回讀 commit",
+      "supabase：會讀 gov.release_tags id=1 並 insert 一筆",
+    ],
+  });
 }
