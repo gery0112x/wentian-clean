@@ -1,174 +1,164 @@
-// app/api/r5/rw-test/route.ts  —— v3（修正 Supabase 406）
+// app/api/r5/rw-test/route.ts
 import { NextResponse } from "next/server";
+
 export const runtime = "nodejs";
-const j = (x:any)=>JSON.stringify(x);
-const b64 = (s:string)=>Buffer.from(s,"utf8").toString("base64");
-const nowIso = ()=>new Date().toISOString();
+const J = (x: any) => new Response(JSON.stringify(x, null, 2), { headers: { "content-type": "application/json; charset=utf-8" }});
 
-/* ---------- GitHub ---------- */
-async function ghRW() {
-  const token = process.env.GITHUB_TOKEN;
-  const repo  = process.env.GITHUB_REPO; // owner/name
-  if (!token || !repo) return { ok:false, skipped:true, hint:"缺 GITHUB_TOKEN 或 GITHUB_REPO" };
-
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  };
-
-  const metaRes = await fetch(`https://api.github.com/repos/${repo}`, { headers });
-  const meta = await metaRes.json().catch(()=> ({}));
-  const canRead = metaRes.ok && meta?.full_name === repo;
-
-  const path = `ops/r5_rw_test_${Date.now()}.json`;
-  const putRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`, {
-    method: "PUT",
-    headers,
-    body: j({ message: "r5 rw test: create", content: b64(j({ ts: nowIso(), by: "r5" })) }),
-  });
-  const putJson = await putRes.json().catch(()=> ({}));
-  const createdSha = putJson?.content?.sha;
-  const createdOk  = putRes.ok && !!createdSha;
-
-  let delOk = false, delJson:any = null;
-  if (createdOk) {
-    const delRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`, {
-      method: "DELETE",
-      headers,
-      body: j({ message: "r5 rw test: cleanup", sha: createdSha }),
-    });
-    delJson = await delRes.json().catch(()=> ({}));
-    delOk = delRes.ok;
-  }
-
-  return {
-    ok: canRead && createdOk && delOk,
-    canRead, createdOk, delOk,
-    repo, path,
-    detail: { metaStatus: metaRes.status, putStatus: putRes.status, delOk, delJson }
-  };
+function env(name: string, fallback?: string) {
+  const v = process.env[name] ?? fallback;
+  if (!v) throw new Error(`缺環境變數: ${name}`);
+  return v;
 }
 
-/* ---------- Vercel ---------- */
-type VercelEnv = { id:string; key:string; target:string[] };
-async function vercelRW() {
-  const token = process.env.VERCEL_TOKEN || process.env.VERCEL_API_TOKEN;
-  const projectId = process.env.VERCEL_PROJECT_ID;
-  const teamId = process.env.VERCEL_TEAM_ID || "";
-  if (!token || !projectId) return { ok:false, skipped:true, hint:"缺 VERCEL_TOKEN 或 VERCEL_PROJECT_ID" };
-
-  const h = { Authorization: `Bearer ${token}`, "Content-Type":"application/json" };
-  const qs = teamId ? `?teamId=${encodeURIComponent(teamId)}` : "";
-  const key = "R5_RW_TEST";
-  const value = `ok-${Date.now()}`;
-
-  const pRes = await fetch(`https://api.vercel.com/v9/projects/${projectId}${qs}`, { headers: h });
-  const pJson = await pRes.json().catch(()=> ({}));
-  const canRead = pRes.ok && !!pJson?.id;
-
-  const listAll = async ():Promise<VercelEnv[]> => {
-    const r = await fetch(`https://api.vercel.com/v9/projects/${projectId}/env${qs}`, { headers: h });
-    const js = await r.json().catch(()=> ({}));
-    return (js?.envs || []) as VercelEnv[];
-  };
-  const delById = async (id:string) => {
-    const r = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env/${id}${qs}`, { method:"DELETE", headers: h });
-    return r.status;
-  };
-
-  const delSteps:any[] = [];
-  const before = await listAll();
-  const dupIds = before.filter(e => e?.key === key).map(e => e.id);
-  for (const id of dupIds) delSteps.push({ by:"pre-clean", id, status: await delById(id) });
-
-  const addRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env${qs}`, {
-    method: "POST",
-    headers: h,
-    body: j({ key, value, target: ["production"], type: "encrypted" }),
-  });
-  const addJson:any = await addRes.json().catch(()=> ({}));
-  const createdId: string | undefined = addJson?.id || addJson?.created?.id;
-  const addOk = addRes.status === 201 && !!createdId;
-
-  let delOk = false;
-  if (addOk && createdId) {
-    const st = await delById(createdId);
-    delSteps.push({ by:"create-id", id: createdId, status: st });
-    delOk = st >= 200 && st < 300;
-  }
-  if (!delOk) {
-    const after = await listAll();
-    for (const id of after.filter(e=>e?.key===key).map(e=>e.id)) {
-      const st = await delById(id);
-      delSteps.push({ by:"list-key", id, status: st });
-      if (st >= 200 && st < 300) delOk = true;
-    }
-  }
-
-  return {
-    ok: canRead && addOk && delOk,
-    canRead, addOk, delOk,
-    detail: { pStatus: pRes.status, addStatus: addRes.status, createdId, addJson, preCleanCount: dupIds.length, delSteps, teamIdUsed: !!teamId }
-  };
-}
-
-/* ---------- Supabase（修 406：補 Accept 並正確指定 schema） ---------- */
-async function supaRW() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const schema = process.env.SUPABASE_SCHEMA || "gov";
-  const table = "release_tags";
-  if (!url || !key) return { ok:false, skipped:true, hint:"缺 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY" };
-
-  const base = `${url}/rest/v1/${table}`;
-  const hBase = {
-    apikey: key,
-    Authorization: `Bearer ${key}`,
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    "Accept-Profile": schema,
-    "Content-Profile": schema,
-  } as Record<string,string>;
-
-  // read
-  const r1 = await fetch(`${base}?select=*&limit=1`, { headers: hBase });
-  const canRead = r1.ok;
-
-  // write（留一筆審計）
-  const payload = [{
-    tag: `r5-rw-${Date.now()}`,
-    kind: "probe",
-    vercel_commit_sha: process.env.VERCEL_GIT_COMMIT_SHA || null,
-    vercel_branch: process.env.VERCEL_GIT_COMMIT_REF || process.env.VERCEL_BRANCH || null
-  }];
-
-  const r2 = await fetch(base, {
-    method: "POST",
-    headers: { ...hBase, Prefer: "return=representation" },
-    body: j(payload),
-  });
-  const addJson = await r2.json().catch(()=> ({}));
-  const addOk = r2.ok;
-
-  return {
-    ok: canRead && addOk,
-    canRead, addOk,
-    detail: { readStatus: r1.status, writeStatus: r2.status, row: addJson?.[0] ?? null }
-  };
-}
-
-/* ---------- handler ---------- */
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const who = (url.searchParams.get("who") || "all").toLowerCase();
-  const out:any = { ts: nowIso(), who, results:{} };
+  const who = url.searchParams.get("who") ?? "supabase";
+  const ts = new Date().toISOString();
 
-  if (who === "all" || who === "github")   out.results.github   = await ghRW().catch(e=>({ ok:false, error:String(e) }));
-  if (who === "all" || who === "vercel")   out.results.vercel   = await vercelRW().catch(e=>({ ok:false, error:String(e) }));
-  if (who === "all" || who === "supabase") out.results.supabase = await supaRW().catch(e=>({ ok:false, error:String(e) }));
+  if (who === "supabase") {
+    // --- 讀/寫都同時帶 gov schema 的 header，並回傳完整錯誤 ---
+    const restUrl = env("NEXT_PUBLIC_SUPABASE_URL").replace(/\/$/, "") + "/rest/v1";
+    const key = env("SUPABASE_SERVICE_ROLE_KEY");
+    const schema = env("SUPABASE_SCHEMA", "public");
 
-  const oks = Object.values(out.results).map((r:any)=>!!r?.ok);
-  out.ok = oks.length>0 && oks.every(Boolean);
-  return NextResponse.json(out, { status: 200 });
+    const headers: Record<string, string> = {
+      apikey: key,
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+      // 讀與寫都明確指定 gov
+      "Accept-Profile": schema,
+      "Content-Profile": schema,
+      // 要回傳插入後資料，且有重複時合併（方便測）
+      Prefer: "return=representation,resolution=merge-duplicates",
+    };
+
+    // 先測「讀」
+    const readRes = await fetch(`${restUrl}/release_tags?select=id&limit=1`, { headers });
+    const readText = await readRes.text();
+    let readJson: any = null;
+    try { readJson = JSON.parse(readText); } catch {}
+
+    // 再測「寫」
+    const payload = [{ kind: "r5_rw_test", tag: `r5-${Date.now()}` }];
+    const writeRes = await fetch(`${restUrl}/release_tags`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    const writeText = await writeRes.text();
+    let writeJson: any = null;
+    try { writeJson = JSON.parse(writeText); } catch {}
+
+    return J({
+      ts,
+      who: "supabase",
+      results: {
+        supabase: {
+          ok: writeRes.ok && readRes.ok,
+          canRead: readRes.ok,
+          addOk: writeRes.ok,
+          detail: {
+            readStatus: readRes.status,
+            writeStatus: writeRes.status,
+            readBody: readJson ?? readText,
+            writeBody: writeJson ?? writeText, // 這裡會把真正的錯誤訊息吐回來
+          },
+          row: Array.isArray(writeJson) ? writeJson[0] : null,
+        },
+      },
+    });
+  }
+
+  if (who === "vercel") {
+    // 確認 Vercel API token/Project 是否可用（讀寫）
+    const token = env("VERCEL_TOKEN");
+    const projectId = env("VERCEL_PROJECT_ID");
+    const base = "https://api.vercel.com";
+    const h = { Authorization: `Bearer ${token}`, "content-type": "application/json" };
+
+    // 讀專案
+    const p = await fetch(`${base}/v9/projects/${projectId}`, { headers: h });
+    const pJson = await p.json();
+
+    // 建個 list env（測寫入/刪除）
+    const key = "R5_RW_TEST";
+    const add = await fetch(`${base}/v10/projects/${projectId}/env`, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify({ type: "encrypted", key, value: Math.random().toString(36).slice(2), target: ["production"] }),
+    });
+    const addJson = await add.json();
+
+    // 刪除剛建立的 env
+    let delStatus: number | null = null;
+    if (add.ok && addJson?.id) {
+      const del = await fetch(`${base}/v9/projects/${projectId}/env/${addJson.id}`, { method: "DELETE", headers: h });
+      delStatus = del.status;
+    }
+
+    return J({
+      ts, who: "vercel",
+      results: {
+        vercel: {
+          ok: p.ok && add.ok && delStatus === 200,
+          canRead: p.ok,
+          addOk: add.ok,
+          delOk: delStatus === 200,
+          detail: { pStatus: p.status, addStatus: add.status, delStatus, project: pJson?.id ?? null },
+        },
+      },
+    });
+  }
+
+  if (who === "github") {
+    // 確認 GitHub PAT 可讀寫 repo
+    const token = env("GITHUB_TOKEN");
+    const repo = env("GITHUB_REPO"); // 例：gery0112x/wentian-clean
+    const api = `https://api.github.com/repos/${repo}/contents/ops`;
+    const h = { Authorization: `Bearer ${token}`, "content-type": "application/json", Accept: "application/vnd.github+json" };
+
+    // 讀取 repo（list）
+    const list = await fetch(api, { headers: h });
+    const listJson = await list.json();
+
+    // 建一個測試檔（PUT）
+    const path = `ops/r5_rw_test_${Date.now()}.json`;
+    const body = { hello: "r5", ts };
+    const put = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+      method: "PUT",
+      headers: h,
+      body: JSON.stringify({
+        message: "r5s rw測試：清理",
+        content: Buffer.from(JSON.stringify(body, null, 2)).toString("base64"),
+      }),
+    });
+    const putJson = await put.json();
+
+    // 刪除（DELETE）
+    let delOk = false;
+    if (put.ok && putJson?.content?.sha) {
+      const del = await fetch(`https://api.github.com/repos/${repo}/contents/${path}`, {
+        method: "DELETE",
+        headers: h,
+        body: JSON.stringify({ message: "r5s rw清理", sha: putJson.content.sha }),
+      });
+      delOk = del.ok;
+    }
+
+    return J({
+      ts, who: "github",
+      results: {
+        github: {
+          ok: list.ok && put.ok && delOk,
+          canRead: list.ok,
+          createdOk: put.ok,
+          delOk,
+          detail: { listStatus: list.status, putStatus: put.status, path, node: putJson?.content?.path ?? null },
+        },
+      },
+    });
+  }
+
+  return J({ ts, who, error: "unknown who" });
 }
