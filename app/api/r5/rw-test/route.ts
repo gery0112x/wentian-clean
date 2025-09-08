@@ -1,12 +1,11 @@
+// app/api/r5/rw-test/route.ts  —— v3（修正 Supabase 406）
 import { NextResponse } from "next/server";
 export const runtime = "nodejs";
-
-// utils
 const j = (x:any)=>JSON.stringify(x);
 const b64 = (s:string)=>Buffer.from(s,"utf8").toString("base64");
 const nowIso = ()=>new Date().toISOString();
 
-// ---------- GitHub ----------
+/* ---------- GitHub ---------- */
 async function ghRW() {
   const token = process.env.GITHUB_TOKEN;
   const repo  = process.env.GITHUB_REPO; // owner/name
@@ -18,22 +17,17 @@ async function ghRW() {
     "X-GitHub-Api-Version": "2022-11-28",
   };
 
-  // read
   const metaRes = await fetch(`https://api.github.com/repos/${repo}`, { headers });
-  const meta = await metaRes.json();
+  const meta = await metaRes.json().catch(()=> ({}));
   const canRead = metaRes.ok && meta?.full_name === repo;
 
-  // write (create -> delete)
   const path = `ops/r5_rw_test_${Date.now()}.json`;
   const putRes = await fetch(`https://api.github.com/repos/${repo}/contents/${encodeURIComponent(path)}`, {
     method: "PUT",
     headers,
-    body: j({
-      message: "r5 rw test: create",
-      content: b64(j({ ts: nowIso(), by: "r5" })),
-    }),
+    body: j({ message: "r5 rw test: create", content: b64(j({ ts: nowIso(), by: "r5" })) }),
   });
-  const putJson = await putRes.json();
+  const putJson = await putRes.json().catch(()=> ({}));
   const createdSha = putJson?.content?.sha;
   const createdOk  = putRes.ok && !!createdSha;
 
@@ -56,22 +50,19 @@ async function ghRW() {
   };
 }
 
-// ---------- Vercel ----------
+/* ---------- Vercel ---------- */
 type VercelEnv = { id:string; key:string; target:string[] };
-
 async function vercelRW() {
   const token = process.env.VERCEL_TOKEN || process.env.VERCEL_API_TOKEN;
   const projectId = process.env.VERCEL_PROJECT_ID;
-  const teamId = process.env.VERCEL_TEAM_ID || ""; // 可選
+  const teamId = process.env.VERCEL_TEAM_ID || "";
   if (!token || !projectId) return { ok:false, skipped:true, hint:"缺 VERCEL_TOKEN 或 VERCEL_PROJECT_ID" };
 
   const h = { Authorization: `Bearer ${token}`, "Content-Type":"application/json" };
   const qs = teamId ? `?teamId=${encodeURIComponent(teamId)}` : "";
-
   const key = "R5_RW_TEST";
   const value = `ok-${Date.now()}`;
 
-  // read project
   const pRes = await fetch(`https://api.vercel.com/v9/projects/${projectId}${qs}`, { headers: h });
   const pJson = await pRes.json().catch(()=> ({}));
   const canRead = pRes.ok && !!pJson?.id;
@@ -87,13 +78,10 @@ async function vercelRW() {
   };
 
   const delSteps:any[] = [];
-
-  // 預清同名 key
   const before = await listAll();
   const dupIds = before.filter(e => e?.key === key).map(e => e.id);
   for (const id of dupIds) delSteps.push({ by:"pre-clean", id, status: await delById(id) });
 
-  // 新增
   const addRes = await fetch(`https://api.vercel.com/v10/projects/${projectId}/env${qs}`, {
     method: "POST",
     headers: h,
@@ -103,7 +91,6 @@ async function vercelRW() {
   const createdId: string | undefined = addJson?.id || addJson?.created?.id;
   const addOk = addRes.status === 201 && !!createdId;
 
-  // 刪除
   let delOk = false;
   if (addOk && createdId) {
     const st = await delById(createdId);
@@ -126,23 +113,23 @@ async function vercelRW() {
   };
 }
 
-// ---------- Supabase（修正重點：用 Profile header 指定 schema） ----------
+/* ---------- Supabase（修 406：補 Accept 並正確指定 schema） ---------- */
 async function supaRW() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  const schema = process.env.SUPABASE_SCHEMA || "gov"; // 你的表在 gov，就用 gov；若在 public 就填 public
-  const table = "release_tags";                           // 表名本體，不帶 schema
-
+  const schema = process.env.SUPABASE_SCHEMA || "gov";
+  const table = "release_tags";
   if (!url || !key) return { ok:false, skipped:true, hint:"缺 SUPABASE_URL 或 SUPABASE_SERVICE_ROLE_KEY" };
 
   const base = `${url}/rest/v1/${table}`;
   const hBase = {
     apikey: key,
     Authorization: `Bearer ${key}`,
+    Accept: "application/json",
     "Content-Type": "application/json",
     "Accept-Profile": schema,
     "Content-Profile": schema,
-  };
+  } as Record<string,string>;
 
   // read
   const r1 = await fetch(`${base}?select=*&limit=1`, { headers: hBase });
@@ -171,18 +158,17 @@ async function supaRW() {
   };
 }
 
+/* ---------- handler ---------- */
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const who = (url.searchParams.get("who") || "all").toLowerCase();
-
   const out:any = { ts: nowIso(), who, results:{} };
 
-  if (who === "all" || who === "github")  out.results.github  = await ghRW().catch(e=>({ ok:false, error:String(e) }));
-  if (who === "all" || who === "vercel")  out.results.vercel  = await vercelRW().catch(e=>({ ok:false, error:String(e) }));
-  if (who === "all" || who === "supabase") out.results.supabase= await supaRW().catch(e=>({ ok:false, error:String(e) }));
+  if (who === "all" || who === "github")   out.results.github   = await ghRW().catch(e=>({ ok:false, error:String(e) }));
+  if (who === "all" || who === "vercel")   out.results.vercel   = await vercelRW().catch(e=>({ ok:false, error:String(e) }));
+  if (who === "all" || who === "supabase") out.results.supabase = await supaRW().catch(e=>({ ok:false, error:String(e) }));
 
   const oks = Object.values(out.results).map((r:any)=>!!r?.ok);
   out.ok = oks.length>0 && oks.every(Boolean);
-
   return NextResponse.json(out, { status: 200 });
 }
