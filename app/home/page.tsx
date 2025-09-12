@@ -16,6 +16,10 @@ function dumpLS() {
 export default function Home() {
   const [email, setEmail] = useState<string | null>(null);
   const [notice, setNotice] = useState<string>('');
+  const [bipEvt, setBipEvt] = useState<any>(null);
+  const [canInstall, setCanInstall] = useState(false);
+  const [installed, setInstalled] = useState(false);
+  const [mode, setMode] = useState<'standalone' | 'browser'>('browser');
 
   const log = (m: string, o?: any) => {
     const line = `[${new Date().toISOString()}] ${m}\n${o ? JSON.stringify(o, null, 2) : ''}`;
@@ -24,79 +28,85 @@ export default function Home() {
     if (el) el.textContent = line + '\n' + el.textContent;
   };
 
+  // ── Session & URL 清理 ────────────────────────────────────────────────────────
   useEffect(() => {
     (async () => {
       const url = new URL(window.location.href);
       const code = url.searchParams.get('code');
 
-      // ❶ 先讀現有 session（若已登入就跳過 exchange）
       const { data: s1 } = await supabase.auth.getSession();
       if (s1.session) {
         setEmail(s1.session.user.email ?? null);
         setNotice('✅ 已登入（沿用既有 session）');
-        if (code) {
-          url.searchParams.delete('code'); url.searchParams.delete('state');
-          window.history.replaceState({}, document.title, url.pathname);
-        }
-        return;
-      }
-
-      // ❷ 沒有 session 才嘗試 PKCE exchange
-      if (code) {
+        if (code) { url.searchParams.delete('code'); url.searchParams.delete('state'); history.replaceState({}, '', url.pathname); }
+      } else if (code) {
         const { data, error } = await supabase.auth.exchangeCodeForSession(code);
         if (error) {
           log('exchange error', { message: error.message, ls: dumpLS() });
-          setNotice('⚠️ 交換失敗，但可用 LocalStorage 會話：請按「輸出 LocalStorage」存證');
+          setNotice('⚠️ 交換失敗，但可用 LocalStorage 會話：按「輸出 LocalStorage」存證');
         } else {
           setEmail(data.session?.user?.email ?? null);
           setNotice('✅ 登入成功（PKCE）');
         }
-        url.searchParams.delete('code'); url.searchParams.delete('state');
-        window.history.replaceState({}, document.title, url.pathname);
+        url.searchParams.delete('code'); url.searchParams.delete('state'); history.replaceState({}, '', url.pathname);
       }
     })();
   }, []);
 
+  // ── A2HS：beforeinstallprompt / appinstalled（官方建議流程）──────────────────
+  useEffect(() => {
+    const onBIP = (e: any) => { e.preventDefault(); setBipEvt(e); setCanInstall(true); log('beforeinstallprompt fired'); }; // 觸發時機不保證，通常載入後；自訂安裝流程。MDN/Web.dev 皆載明此法。 
+    const onInstalled = () => { setInstalled(true); setNotice('✅ 已安裝（appinstalled）'); log('appinstalled'); };
+    window.addEventListener('beforeinstallprompt', onBIP); // MDN: beforeinstallprompt。 
+    window.addEventListener('appinstalled', onInstalled);   // MDN: appinstalled。
+    // 顯示模式偵測
+    const check = () => setMode(window.matchMedia('(display-mode: standalone)').matches ? 'standalone' : 'browser');
+    check(); window.matchMedia('(display-mode: standalone)').addEventListener?.('change', check);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBIP);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
+
+  const install = async () => {
+    if (!bipEvt) { setNotice('尚未可安裝（等待 beforeinstallprompt）'); return; }
+    bipEvt.prompt(); // 顯示安裝對話框
+    const choice = await bipEvt.userChoice; // { outcome: 'accepted' | 'dismissed' }
+    setNotice(`A2HS：${choice.outcome}`);
+    setBipEvt(null); setCanInstall(false);
+    log('userChoice', choice);
+  };
+
+  // ── 既有功能 ────────────────────────────────────────────────────────────────
   const ping = async () => {
     const r = await fetch('/_models/openai/chat?q=ping', { cache: 'no-store' });
     const j = await r.json().catch(() => ({}));
     log(`/_models ping => ${r.status}`, j);
     alert(`/_models ping: ${r.status} ${(j.reply || '')}`);
   };
-
   const signin = async () => {
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin }
-    });
+    const { error } = await supabase.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
     if (error) log('signin error', { message: error.message });
   };
-
-  const signout = async () => {
-    await supabase.auth.signOut();
-    setEmail(null);
-    setNotice('已登出');
-  };
-
-  const dumpStorage = () => {
-    log('localStorage dump', dumpLS());
-    alert('已輸出到下方 DEBUG 區');
-  };
+  const signout = async () => { await supabase.auth.signOut(); setEmail(null); setNotice('已登出'); };
+  const dumpStorage = () => { log('localStorage dump', dumpLS()); alert('已輸出到下方 DEBUG 區'); };
 
   return (
     <main style={{ padding: 16, fontFamily: 'ui-sans-serif' }}>
       <h1>無極入口（最小 PWA 殼）</h1>
-      <div style={{ display:'flex', gap:8, margin:'12px 0' }}>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',margin:'12px 0'}}>
         <button onClick={ping}>/_models ping</button>
         <button onClick={signin}>Google 登入</button>
         <button onClick={signout}>登出</button>
         <button onClick={dumpStorage}>輸出 LocalStorage</button>
+        <button onClick={install} disabled={!canInstall}>安裝 App</button>
+        <span style={{alignSelf:'center'}}>顯示模式：<b>{mode}</b>　已安裝：<b>{installed ? '是' : '否'}</b></span>
       </div>
 
       {notice && <div style={{padding:12,background:'#ECFDF5',border:'1px solid #10B981',borderRadius:8,marginBottom:12}}>{notice}</div>}
       <div>當前使用者：{email ?? '未登入'}</div>
       <pre id="dbg" style={{whiteSpace:'pre-wrap',background:'#f6f7f9',padding:12,borderRadius:8,minHeight:120}} />
-      <small>說明：前端 SDK 支援 OAuth（含 PKCE）與 `exchangeCodeForSession`；預設 session 存 LocalStorage。參考：signInWithOAuth、sessions、PKCE flow。</small>
+      <small>參考：beforeinstallprompt / appinstalled（A2HS 自訂流程）、display-mode 偵測（standalone）。</small>
     </main>
   );
 }
