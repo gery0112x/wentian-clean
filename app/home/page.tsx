@@ -8,15 +8,9 @@ const supabase = createClient(
   { auth: { flowType: 'pkce', persistSession: true, autoRefreshToken: true } }
 );
 
-function readLocalSessionEmail(): string | null {
-  try {
-    const k = Object.keys(localStorage).find(x => x.startsWith('sb-') && x.endsWith('-auth-token'));
-    if (!k) return null;
-    const raw = localStorage.getItem(k);
-    if (!raw) return null;
-    const j = JSON.parse(raw);
-    return j.user?.email ?? j?.user?.user_metadata?.email ?? null;
-  } catch { return null; }
+function dumpLS() {
+  const keys = Object.keys(localStorage).filter(k => k.startsWith('sb-') || k.includes('supabase'));
+  return Object.fromEntries(keys.map(k => [k, localStorage.getItem(k)]));
 }
 
 export default function Home() {
@@ -31,39 +25,34 @@ export default function Home() {
   };
 
   useEffect(() => {
-    const url = new URL(window.location.href);
-    const code = url.searchParams.get('code');
-
     (async () => {
-      try {
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get('code');
+
+      // ❶ 先讀現有 session（若已登入就跳過 exchange）
+      const { data: s1 } = await supabase.auth.getSession();
+      if (s1.session) {
+        setEmail(s1.session.user.email ?? null);
+        setNotice('✅ 已登入（沿用既有 session）');
         if (code) {
-          // 1) 嘗試 PKCE 交換
-          const { data, error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) {
-            log('exchange error', { message: error.message });
-            // 2) 失敗時：回讀 localStorage 中已存在的 session（你目前就屬於這種情況）
-            const e = readLocalSessionEmail();
-            if (e) {
-              setEmail(e);
-              setNotice('✅ 已從 localStorage 回讀登入（PKCE 交換失敗，但會話有效）');
-            } else {
-              setNotice('❌ 登入失敗：' + error.message);
-            }
-          } else {
-            setEmail(data.session?.user?.email ?? null);
-            setNotice('✅ 登入成功（PKCE）');
-          }
-          // 清 URL 參數
           url.searchParams.delete('code'); url.searchParams.delete('state');
           window.history.replaceState({}, document.title, url.pathname);
-        } else {
-          // 首頁直進：讀現有 session
-          const { data } = await supabase.auth.getSession();
-          setEmail(data.session?.user?.email ?? readLocalSessionEmail());
         }
-      } catch (e: any) {
-        setNotice('❌ 例外：' + (e?.message || 'unknown'));
-        log('exception', { message: e?.message });
+        return;
+      }
+
+      // ❷ 沒有 session 才嘗試 PKCE exchange
+      if (code) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          log('exchange error', { message: error.message, ls: dumpLS() });
+          setNotice('⚠️ 交換失敗，但可用 LocalStorage 會話：請按「輸出 LocalStorage」存證');
+        } else {
+          setEmail(data.session?.user?.email ?? null);
+          setNotice('✅ 登入成功（PKCE）');
+        }
+        url.searchParams.delete('code'); url.searchParams.delete('state');
+        window.history.replaceState({}, document.title, url.pathname);
       }
     })();
   }, []);
@@ -90,9 +79,7 @@ export default function Home() {
   };
 
   const dumpStorage = () => {
-    const keys = Object.keys(localStorage).filter(k => k.startsWith('sb-'));
-    const dump = Object.fromEntries(keys.map(k => [k, localStorage.getItem(k)]));
-    log('localStorage dump', dump);
+    log('localStorage dump', dumpLS());
     alert('已輸出到下方 DEBUG 區');
   };
 
@@ -109,7 +96,7 @@ export default function Home() {
       {notice && <div style={{padding:12,background:'#ECFDF5',border:'1px solid #10B981',borderRadius:8,marginBottom:12}}>{notice}</div>}
       <div>當前使用者：{email ?? '未登入'}</div>
       <pre id="dbg" style={{whiteSpace:'pre-wrap',background:'#f6f7f9',padding:12,borderRadius:8,minHeight:120}} />
-      <small>提示：前端 SDK 會把 session 存在 LocalStorage（鍵名多為 sb-*）。</small>
+      <small>說明：前端 SDK 支援 OAuth（含 PKCE）與 `exchangeCodeForSession`；預設 session 存 LocalStorage。參考：signInWithOAuth、sessions、PKCE flow。</small>
     </main>
   );
 }
