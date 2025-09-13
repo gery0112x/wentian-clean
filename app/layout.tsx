@@ -1,17 +1,26 @@
-import './globals.css';
-import type { Metadata } from 'next';
+// app/layout.tsx
+import type { ReactNode } from 'react';
+import SwRegister from './_components/SwRegister';
 
-export const metadata: Metadata = {
-  title: '無極入口（最小 PWA 殼）',
-  description: 'Next.js App Router 最小 PWA 範本',
+export const metadata = {
+  title: '無極入口',
+  description: '最小 PWA 殼',
   manifest: '/manifest.webmanifest',
-  themeColor: '#111827',
 };
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="zh-Hant-TW">
-      <body>{children}</body>
+    <html lang="zh-Hant">
+      <head>
+        <link rel="manifest" href="/manifest.webmanifest" />
+        <meta name="theme-color" content="#111827" />
+        <link rel="icon" href="/icons/icon-192.png" />
+        <link rel="apple-touch-icon" href="/icons/icon-512.png" />
+      </head>
+      <body>
+        <SwRegister />
+        {children}
+      </body>
     </html>
   );
 }
