@@ -1,52 +1,36 @@
-// A/B/C fallback: static -> generated -> final placeholder
-import type { NextRequest } from 'next/server'
+// A: public/icons/icon-<size>.png → B: /api/og/icon?size= → C: 1x1 fallback
+import { NextRequest, NextResponse } from 'next/server'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 
-const PNG_1x1_BASE64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO8V3a0AAAAASUVORK5CYII='
+export const runtime = 'nodejs'
 
-function pickSize(sizeRaw: string | null) {
-  const n = Number(sizeRaw || 0)
-  if (n >= 384) return 512        // 就近原則
-  if (n >= 144) return 192
-  return 192
-}
-
-async function tryStatic(urlPath: string) {
-  try {
-    // 嘗試讀 public 靜態檔（若未來你真的放 /public/icons/icon-192.png）
-    const res = await fetch(new URL(urlPath, process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost').toString())
-    if (res.ok && res.headers.get('content-type')?.includes('image/')) {
-      const buf = Buffer.from(await res.arrayBuffer())
-      return new Response(buf, {
-        headers: {
-          'Content-Type': res.headers.get('content-type') || 'image/png',
-          'Cache-Control': 'public, max-age=31536000, immutable',
-          'x-icon-source': 'A-static'
-        }
-      })
-    }
-  } catch {}
-  return null
-}
-
-function generated(size: number, tag: string) {
-  const buf = Buffer.from(PNG_1x1_BASE64, 'base64') // 先用 1x1 佔位，之後要真 192/512 再換
-  return new Response(buf, {
-    headers: {
-      'Content-Type': 'image/png',
-      'Cache-Control': 'public, max-age=31536000, immutable',
-      'x-icon-source': tag,
-      'x-icon-size': String(size)
-    }
-  })
-}
+const ONE_BY_ONE = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wcAAgMBgYlq8j8AAAAASUVORK5CYII=',
+  'base64'
+)
 
 export async function GET(req: NextRequest, { params }: { params: { size: string } }) {
-  const size = pickSize(params.size)
-  // A: 試著讀 /icons/icon-*.png（若未來真的放檔）
-  const a = await tryStatic(`/icons/icon-${size}.png`)
-  if (a) return a
+  const size = ['192','512'].includes(params.size) ? params.size : '192'
+  const rel = `/icons/icon-${size}.png`
+  const abs = path.join(process.cwd(), 'public', rel)
 
-  // B: 產生佔位圖（可運作、長快取）
-  return generated(size, 'B-generated')
+  // A: 靜態檔
+  try {
+    const file = await fs.readFile(abs)
+    return new NextResponse(file, { headers: { 'content-type': 'image/png', 'x-src': 'A-static' } })
+  } catch {}
+
+  // B: Edge 動態
+  try {
+    const url = new URL(`/api/og/icon?size=${size}`, req.url)
+    const r = await fetch(url.toString(), { cache: 'no-store' })
+    if (r.ok) {
+      const buf = Buffer.from(await r.arrayBuffer())
+      return new NextResponse(buf, { headers: { 'content-type': 'image/png', 'x-src': 'B-dynamic' } })
+    }
+  } catch {}
+
+  // C: 1x1 最小保底
+  return new NextResponse(ONE_BY_ONE, { headers: { 'content-type': 'image/png', 'x-src': 'C-fallback' } })
 }
