@@ -1,0 +1,4 @@
+/* 基本樣式；確保 build 不因缺檔失敗 */
+html,body,#__next{height:100%}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
