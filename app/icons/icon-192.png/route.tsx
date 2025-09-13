@@ -1,7 +1,6 @@
+// app/icons/icon-192.png/route.tsx
 import { ImageResponse } from 'next/og';
-
 export const runtime = 'edge';
-export const contentType = 'image/png';
 
 export async function GET() {
   return new ImageResponse(
