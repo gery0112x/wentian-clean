@@ -1,36 +1,25 @@
-// A: public/icons/icon-<size>.png → B: /api/og/icon?size= → C: 1x1 fallback
-import { NextRequest, NextResponse } from 'next/server'
-import fs from 'node:fs/promises'
-import path from 'node:path'
+// app/api/icon/[size]/route.ts
+import React from 'react'
+import { ImageResponse } from 'next/og'
 
-export const runtime = 'nodejs'
+export const runtime = 'edge'
+export const dynamic = 'force-dynamic'
 
-const ONE_BY_ONE = Buffer.from(
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/wcAAgMBgYlq8j8AAAAASUVORK5CYII=',
-  'base64'
-)
+export async function GET(_req: Request, ctx: { params: { size?: string } }) {
+  const n = Number(ctx?.params?.size)
+  const s = Number.isFinite(n) ? Math.max(48, Math.min(1024, n)) : 192
+  const font = Math.round(s * 0.42)
 
-export async function GET(req: NextRequest, { params }: { params: { size: string } }) {
-  const size = ['192','512'].includes(params.size) ? params.size : '192'
-  const rel = `/icons/icon-${size}.png`
-  const abs = path.join(process.cwd(), 'public', rel)
-
-  // A: 靜態檔
-  try {
-    const file = await fs.readFile(abs)
-    return new NextResponse(file, { headers: { 'content-type': 'image/png', 'x-src': 'A-static' } })
-  } catch {}
-
-  // B: Edge 動態
-  try {
-    const url = new URL(`/api/og/icon?size=${size}`, req.url)
-    const r = await fetch(url.toString(), { cache: 'no-store' })
-    if (r.ok) {
-      const buf = Buffer.from(await r.arrayBuffer())
-      return new NextResponse(buf, { headers: { 'content-type': 'image/png', 'x-src': 'B-dynamic' } })
-    }
-  } catch {}
-
-  // C: 1x1 最小保底
-  return new NextResponse(ONE_BY_ONE, { headers: { 'content-type': 'image/png', 'x-src': 'C-fallback' } })
+  return new ImageResponse(
+    (
+      <div style={{
+        width: '100%', height: '100%', display: 'flex',
+        alignItems: 'center', justifyContent: 'center',
+        background: '#111827', color: '#fff', fontSize: font, fontWeight: 800
+      }}>
+        無
+      </div>
+    ),
+    { width: s, height: s }
+  )
 }
