@@ -1,5 +1,6 @@
 // app/icons/icon-512.png/route.tsx
 import { ImageResponse } from 'next/og';
+
 export const runtime = 'edge';
 
 export async function GET() {
@@ -13,7 +14,7 @@ export async function GET() {
           alignItems: 'center',
           justifyContent: 'center',
           background: '#111827',
-          color: '#fff',
+          color: '#ffffff',
           fontSize: 200,
           fontWeight: 800,
         }}
