@@ -1,36 +1,66 @@
 // app/api/pwa/diag/route.ts
-import { NextRequest } from 'next/server'
-export const runtime = 'edge'
-export const dynamic = 'force-dynamic'
+import { NextResponse } from 'next/server';
 
-async function ping(url: string) {
-  const t0 = Date.now()
+export const runtime = 'edge';
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
+
+type CheckResult = {
+  ok: boolean;
+  status: number;
+  ct?: string;
+  url: string;
+  error?: string;
+};
+
+async function probe(url: string): Promise<CheckResult> {
   try {
-    const r = await fetch(url, { cache: 'no-store' })
-    return { url, ok: r.ok, status: r.status, ms: Date.now() - t0, ct: r.headers.get('content-type') || '' }
-  } catch (e: any) {
-    return { url, ok: false, status: 0, ms: Date.now() - t0, error: String(e) }
+    const r = await fetch(url, { method: 'GET', cache: 'no-store' });
+    return {
+      ok: r.ok,
+      status: r.status,
+      ct: r.headers.get('content-type') ?? undefined,
+      url,
+    };
+  } catch (e: unknown) {
+    return {
+      ok: false,
+      status: 0,
+      url,
+      error: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 
-export async function GET(req: NextRequest) {
-  const base = new URL('/', req.url).origin
-  const urls = [
-    `${base}/manifest.webmanifest`,
-    `${base}/api/icon/192`,
-    `${base}/api/icon/512`,
-    `${base}/_models/openai/chat?q=ping`
-  ]
-  const results = await Promise.all(urls.map(ping))
-  const [m, i192, i512, model] = results
-  return Response.json({
+export async function GET(req: Request) {
+  const origin = new URL(req.url).origin;
+
+  const [m, i192, i512, model] = await Promise.all([
+    probe(`${origin}/manifest.webmanifest`),
+    probe(`${origin}/icons/icon-192.png`),
+    probe(`${origin}/icons/icon-512.png`),
+    probe(`${origin}/_models`), // 若不存在會回 0/非 2xx，不影響其它檢查
+  ]);
+
+  // ✅ 嚴格模式下作空值保護
+  const icon192Ok = Boolean(i192.ok && (i192.ct?.includes('image/png') ?? false));
+  const icon512Ok = Boolean(i512.ok && (i512.ct?.includes('image/png') ?? false));
+
+  const healthy = Boolean(m.ok && icon192Ok && icon512Ok);
+
+  const body = {
     summary: {
       manifest_ok: m.ok,
-      icon_192_ok: i192.ok && i192.ct.includes('image/png'),
-      icon_512_ok: i512.ok && i512.ct.includes('image/png'),
-      models_ping_ok: model.ok
+      icon_192_ok: icon192Ok,
+      icon_512_ok: icon512Ok,
+      models_ping_ok: model.ok,
+      healthy,
     },
-    results,
-    now: new Date().toISOString()
-  })
+    debug: { manifest: m, icon_192: i192, icon_512: i512, models: model },
+  };
+
+  return NextResponse.json(body, {
+    status: healthy ? 200 : 503,
+    headers: { 'Cache-Control': 'no-store' },
+  });
 }
