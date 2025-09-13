@@ -1,12 +1,9 @@
-import { ImageResponse } from 'next/og'
-import type { NextRequest } from 'next/server'
+// app/api/og/icon/route.tsx
+import { ImageResponse } from 'next/og';
 
-export const runtime = 'edge'
-export const contentType = 'image/png'
+export const runtime = 'edge';
 
-export async function GET(req: NextRequest) {
-  const size = Number(new URL(req.url).searchParams.get('size') || '192')
-  const fontSize = size === 512 ? 200 : 72
+export async function GET() {
   return new ImageResponse(
     (
       <div
@@ -18,13 +15,13 @@ export async function GET(req: NextRequest) {
           justifyContent: 'center',
           background: '#111827',
           color: '#fff',
-          fontSize,
+          fontSize: 64,
           fontWeight: 800,
         }}
       >
-        無
+        OG
       </div>
     ),
-    { width: size, height: size }
-  )
+    { width: 1200, height: 630 }
+  );
 }
