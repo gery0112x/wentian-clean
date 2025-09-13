@@ -1,66 +1,55 @@
 // app/api/pwa/diag/route.ts
 import { NextResponse } from 'next/server';
-
 export const runtime = 'edge';
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
 
-type CheckResult = {
+type Snap = {
   ok: boolean;
   status: number;
-  ct?: string;
-  url: string;
-  error?: string;
+  ct: string | null;
+  url: string | null;
+  err?: string;
 };
 
-async function probe(url: string): Promise<CheckResult> {
-  try {
-    const r = await fetch(url, { method: 'GET', cache: 'no-store' });
+function snap(res: Response | null, err?: unknown): Snap {
+  if (res) {
     return {
-      ok: r.ok,
-      status: r.status,
-      ct: r.headers.get('content-type') ?? undefined,
-      url,
-    };
-  } catch (e: unknown) {
-    return {
-      ok: false,
-      status: 0,
-      url,
-      error: e instanceof Error ? e.message : String(e),
+      ok: res.ok,
+      status: res.status,
+      ct: res.headers.get('content-type'),
+      url: res.url,
     };
   }
+  return { ok: false, status: 0, ct: null, url: null, err: String(err) };
 }
 
 export async function GET(req: Request) {
-  const origin = new URL(req.url).origin;
+  const base = new URL(req.url).origin;
 
-  const [m, i192, i512, model] = await Promise.all([
-    probe(`${origin}/manifest.webmanifest`),
-    probe(`${origin}/icons/icon-192.png`),
-    probe(`${origin}/icons/icon-512.png`),
-    probe(`${origin}/_models`), // 若不存在會回 0/非 2xx，不影響其它檢查
+  const [m, i192, i512] = await Promise.allSettled([
+    fetch(`${base}/manifest.webmanifest`, { cache: 'no-store' }),
+    fetch(`${base}/icons/icon-192.png`, { cache: 'no-store' }),
+    fetch(`${base}/icons/icon-512.png`, { cache: 'no-store' }),
   ]);
 
-  // ✅ 嚴格模式下作空值保護
-  const icon192Ok = Boolean(i192.ok && (i192.ct?.includes('image/png') ?? false));
-  const icon512Ok = Boolean(i512.ok && (i512.ct?.includes('image/png') ?? false));
+  const M = m.status === 'fulfilled' ? snap(m.value) : snap(null, m.reason);
+  const I192 = i192.status === 'fulfilled' ? snap(i192.value) : snap(null, i192.reason);
+  const I512 = i512.status === 'fulfilled' ? snap(i512.value) : snap(null, i512.reason);
 
-  const healthy = Boolean(m.ok && icon192Ok && icon512Ok);
+  const healthy =
+    M.ok &&
+    I192.ok && (I192.ct?.includes('image/png') ?? false) &&
+    I512.ok && (I512.ct?.includes('image/png') ?? false);
 
-  const body = {
-    summary: {
-      manifest_ok: m.ok,
-      icon_192_ok: icon192Ok,
-      icon_512_ok: icon512Ok,
-      models_ping_ok: model.ok,
-      healthy,
+  return NextResponse.json(
+    {
+      summary: {
+        manifest_ok: M.ok,
+        icon_192_ok: I192.ok && (I192.ct?.includes('image/png') ?? false),
+        icon_512_ok: I512.ok && (I512.ct?.includes('image/png') ?? false),
+        healthy,
+      },
+      debug: { manifest: M, icon_192: I192, icon_512: I512 },
     },
-    debug: { manifest: m, icon_192: i192, icon_512: i512, models: model },
-  };
-
-  return NextResponse.json(body, {
-    status: healthy ? 200 : 503,
-    headers: { 'Cache-Control': 'no-store' },
-  });
+    { headers: { 'cache-control': 'no-store' } }
+  );
 }
