@@ -1,8 +1,10 @@
-// app/api/r5/rw-test/route.ts
+// app/api/r5/risk/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const TABLE = "ops.risk_cards";
 
 function pick(names: string[]) {
   for (const n of names) {
@@ -11,7 +13,6 @@ function pick(names: string[]) {
   }
   return { name: "", value: "" };
 }
-
 const urlPick = pick(["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"]);
 const keyPick = pick([
   "SUPABASE_SERVICE_ROLE",
@@ -20,82 +21,114 @@ const keyPick = pick([
   "SERVICE_ROLE",
 ]);
 
-const SUPABASE_URL = urlPick.value || "";
-const SERVICE_KEY  = keyPick.value || "";
-const TABLE = "ops.io_requests"; // ★ 正式表
-
 function diag(extra: any = {}) {
   return {
-    ok: Boolean(SUPABASE_URL && SERVICE_KEY),
+    ok: Boolean(urlPick.value && keyPick.value),
     diag: {
-      has_url: Boolean(SUPABASE_URL),
-      has_service_key: Boolean(SERVICE_KEY),
+      has_url: Boolean(urlPick.value),
+      has_service_key: Boolean(keyPick.value),
       used_url_key: urlPick.name || null,
       used_service_key: keyPick.name || null,
       table: TABLE,
-      hint_zh: "POST 寫入正式表；GET ?inspect=1 可列 DB/排程",
+      hint_zh: "POST 上傳/覆寫風險卡；GET ?id= 查詢；GET ?health=1 健檢",
       ...extra,
     },
   };
 }
 
-// ---- Inspect (呼叫 public.r5_inspect) ----
-async function callInspect(schema: string | null) {
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/r5_inspect`, {
-    method: "POST",
+async function rest(path: string, init?: RequestInit) {
+  return fetch(`${urlPick.value}${path}`, {
+    ...init,
     headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
+      apikey: keyPick.value,
+      Authorization: `Bearer ${keyPick.value}`,
       "Content-Type": "application/json",
+      ...(init?.headers || {}),
     },
-    body: JSON.stringify({ p_schema: schema }),
+    cache: "no-store",
   });
-
-  if (res.status === 404) {
-    return NextResponse.json(
-      { ok: false, code: "RPC_NOT_FOUND", hint_zh: "請先建立函式 public.r5_inspect" },
-      { status: 424 }
-    );
-  }
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    return NextResponse.json(
-      { ok: false, code: "RPC_ERROR", status: res.status, body: data },
-      { status: 502 }
-    );
-  }
-
-  return NextResponse.json({ ...diag({ schema }), data }, { status: 200 });
 }
 
+/* -------- GET --------
+   - /_r5/risk?health=1          健檢（含表可視性）
+   - /_r5/risk?id=risk.MCP       取單卡
+   - /_r5/risk                   列最新 50 張
+*/
 export async function GET(req: NextRequest) {
-  const url = new URL(req.url);
-  const inspect = url.searchParams.get("inspect");
-  const schema = url.searchParams.get("schema");
-  if (inspect) {
-    if (!SUPABASE_URL || !SERVICE_KEY) {
+  const q = new URL(req.url).searchParams;
+  const health = q.get("health");
+  const id = q.get("id");
+
+  if (!urlPick.value || !keyPick.value) {
+    return NextResponse.json(
+      { ok: false, code: "MISSING_ENV", ...diag() },
+      { status: 500 }
+    );
+  }
+
+  if (health) {
+    // 嘗試讀 1 列判斷 PostgREST 是否看得到 ops.risk_cards
+    const res = await rest(`/rest/v1/${TABLE}?select=id&limit=1`);
+    if (res.status === 404) {
       return NextResponse.json(
         {
           ok: false,
-          code: "MISSING_ENV",
-          used_url_key: urlPick.name || null,
-          used_service_key: keyPick.name || null,
-          hint_zh: "請設定 SUPABASE_URL 與 Service Role（金鑰僅伺服端）",
+          code: "TABLE_NOT_VISIBLE",
+          ...diag(),
+          fix_zh:
+            "PostgREST 尚未暴露 ops schema；請在 SQL Editor 執行 alter role authenticator ... pgrst.db_schemas 加入 ops 並 reload",
+          sql: `alter role authenticator in database postgres
+  set pgrst.db_schemas = 'public,storage,graphql_public,extensions,ops';
+select pg_notify('pgrst','reload config');`,
         },
-        { status: 500 }
+        { status: 424 }
       );
     }
-    return callInspect(schema);
+    // 200/206 視為可見
+    return NextResponse.json(diag({ visible: true }), { status: 200 });
   }
-  return NextResponse.json(diag(), { status: 200 });
+
+  if (id) {
+    const res = await rest(
+      `/rest/v1/${TABLE}?id=eq.${encodeURIComponent(id)}&select=*`
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return NextResponse.json(
+        { ok: false, code: "READ_ERROR", status: res.status, body: data },
+        { status: 502 }
+      );
+    }
+    return NextResponse.json({ ...diag(), data }, { status: 200 });
+  }
+
+  // list
+  const res = await rest(`/rest/v1/${TABLE}?select=id,name,version,updated_at&order=updated_at.desc&limit=50`);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    return NextResponse.json(
+      { ok: false, code: "LIST_ERROR", status: res.status, body: data },
+      { status: 502 }
+    );
+  }
+  return NextResponse.json({ ...diag(), data }, { status: 200 });
 }
 
-// ---- Write to ops.io_requests ----
+/* -------- POST --------
+   Body（JSON）：
+   {
+     "id":"risk.MCP",
+     "name":"MCP 模組風險卡",
+     "version":"v1.0",
+     "updated_at":"2025-09-14T12:00:00Z",   // 你原本 +08:00 這裡可用 UTC
+     "checksum":"MCP_risk_v1_0",
+     "card":{ ... 原始卡片 JSON（含 risks…） ... }
+   }
+*/
 export async function POST(req: NextRequest) {
-  if (!SUPABASE_URL || !SERVICE_KEY) {
+  if (!urlPick.value || !keyPick.value) {
     return NextResponse.json(
-      { ok: false, code: "MISSING_ENV", hint_zh: "請於 Vercel 設定 SUPABASE_URL 與 Service Role 金鑰" },
+      { ok: false, code: "MISSING_ENV", ...diag() },
       { status: 500 }
     );
   }
@@ -103,79 +136,77 @@ export async function POST(req: NextRequest) {
   let body: any = {};
   try { body = await req.json(); } catch {}
 
-  const ip =
-    (req.headers.get("x-real-ip") ||
-     req.headers.get("x-forwarded-for") ||
-     "").split(",")[0].trim() || null;
+  // 基本驗證
+  const missing = ["id", "name", "version", "updated_at", "card"].filter(
+    (k) => !body?.[k]
+  );
+  if (missing.length) {
+    return NextResponse.json(
+      { ok: false, code: "INVALID_INPUT", missing, hint_zh: "必填欄位缺失" },
+      { status: 400 }
+    );
+  }
 
-  const payload = {
-    op: body?.op ?? "generic",
-    status: body?.status ?? "queued",
-    source: body?.source ?? "r5",
-    path: "/_r5/rw-test",
-    user_id: body?.user_id ?? null,
-    session_id: body?.session_id ?? null,
-    ip,
-    ua: req.headers.get("user-agent") || null,
-    tags: Array.isArray(body?.tags) ? body.tags : null,
-    cost_cents: body?.cost_cents ?? 0,
-    input_tokens: body?.input_tokens ?? null,
-    output_tokens: body?.output_tokens ?? null,
-    payload: body?.payload ?? body ?? null,
-    result: null,
-    error: null,
+  // 準備 upsert（on_conflict=id）
+  const rec = {
+    id: String(body.id),
+    name: String(body.name),
+    version: String(body.version),
+    checksum: body.checksum ?? null,
+    updated_at: body.updated_at,
+    card: body.card,
   };
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
-    method: "POST",
-    headers: {
-      apikey: SERVICE_KEY,
-      Authorization: `Bearer ${SERVICE_KEY}`,
-      "Content-Type": "application/json",
-      Prefer: "return=representation",
-    },
-    body: JSON.stringify(payload),
-  });
+  const res = await rest(
+    `/rest/v1/${TABLE}?on_conflict=id`,
+    {
+      method: "POST",
+      headers: { Prefer: "return=representation,resolution=merge-duplicates" },
+      body: JSON.stringify(rec),
+    }
+  );
 
-  if (res.status === 201) {
-    const rows = await res.json();
-    return NextResponse.json({ ok: true, db_status: 201, rows }, { status: 201 });
+  if (res.status === 201 || res.status === 200) {
+    const rows = await res.json().catch(() => []);
+    return NextResponse.json(
+      { ok: true, db_status: res.status, rows },
+      { status: 201 }
+    );
   }
 
   if (res.status === 404) {
-    // 表/綱要不存在 → 回一次性建表腳本
+    // 表/可見性問題 → 回自救腳本
     return NextResponse.json(
       {
         ok: false,
         code: "TABLE_NOT_FOUND",
-        hint_zh: "請先建立 ops.io_requests 後重試（已附 SQL）",
-        sql: `-- 一次性建表
+        hint_zh: "風險表不存在或未暴露；請先在 SQL Editor 建表並將 ops 納入 pgrst.db_schemas",
+        sql: `-- 建表
 create schema if not exists ops;
-create extension if not exists pgcrypto with schema extensions;
-create table if not exists ops.io_requests (
-  id bigserial primary key,
-  trace_id uuid not null default gen_random_uuid(),
-  op text not null,
-  status text not null default 'queued',
-  source text, path text, user_id uuid, session_id text,
-  ip inet, ua text, tags text[],
-  cost_cents integer default 0,
-  input_tokens integer, output_tokens integer,
-  payload jsonb, result jsonb, error jsonb,
+create table if not exists ops.risk_cards (
+  id text primary key,
+  name text not null,
+  version text not null,
+  checksum text,
+  updated_at timestamptz not null default now(),
+  card jsonb not null,
   created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  touched_at timestamptz not null default now()
 );
 grant usage on schema ops to service_role;
-grant all privileges on all tables in schema ops to service_role;
-grant all privileges on all sequences in schema ops to service_role;`
+grant select, insert, update on ops.risk_cards to service_role;
+-- 暴露 ops：
+alter role authenticator in database postgres
+  set pgrst.db_schemas = 'public,storage,graphql_public,extensions,ops';
+select pg_notify('pgrst','reload config');`,
       },
       { status: 424 }
     );
   }
 
-  const text = await res.text();
+  const txt = await res.text();
   return NextResponse.json(
-    { ok: false, code: "DB_ERROR", status: res.status, body: text.slice(0, 2000) },
+    { ok: false, code: "DB_ERROR", status: res.status, body: txt.slice(0, 2000) },
     { status: 502 }
   );
 }
