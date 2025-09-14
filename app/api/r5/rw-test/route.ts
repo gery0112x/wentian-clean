@@ -22,6 +22,7 @@ const keyPick = pick([
 
 const SUPABASE_URL = urlPick.value || "";
 const SERVICE_KEY  = keyPick.value || "";
+const TABLE = "ops.io_requests"; // ★ 正式表
 
 function diag(extra: any = {}) {
   return {
@@ -31,13 +32,14 @@ function diag(extra: any = {}) {
       has_service_key: Boolean(SERVICE_KEY),
       used_url_key: urlPick.name || null,
       used_service_key: keyPick.name || null,
-      table: "public.r5_rw_log",
-      hint_zh: "POST 可寫入；GET ?inspect=1 可列出資料庫/排程",
+      table: TABLE,
+      hint_zh: "POST 寫入正式表；GET ?inspect=1 可列 DB/排程",
       ...extra,
     },
   };
 }
 
+// ---- Inspect (呼叫 public.r5_inspect) ----
 async function callInspect(schema: string | null) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/r5_inspect`, {
     method: "POST",
@@ -51,12 +53,8 @@ async function callInspect(schema: string | null) {
 
   if (res.status === 404) {
     return NextResponse.json(
-      {
-        ok: false,
-        code: "RPC_NOT_FOUND",
-        hint_zh: "Supabase 尚未建立 public.r5_inspect（請在 SQL Editor 先建立）",
-      },
-      { status: 424 },
+      { ok: false, code: "RPC_NOT_FOUND", hint_zh: "請先建立函式 public.r5_inspect" },
+      { status: 424 }
     );
   }
 
@@ -64,11 +62,10 @@ async function callInspect(schema: string | null) {
   if (!res.ok) {
     return NextResponse.json(
       { ok: false, code: "RPC_ERROR", status: res.status, body: data },
-      { status: 502 },
+      { status: 502 }
     );
   }
 
-  // 修正點：不要再加 ok:true，改為展開 diag（內含 ok）
   return NextResponse.json({ ...diag({ schema }), data }, { status: 200 });
 }
 
@@ -76,7 +73,6 @@ export async function GET(req: NextRequest) {
   const url = new URL(req.url);
   const inspect = url.searchParams.get("inspect");
   const schema = url.searchParams.get("schema");
-
   if (inspect) {
     if (!SUPABASE_URL || !SERVICE_KEY) {
       return NextResponse.json(
@@ -87,38 +83,50 @@ export async function GET(req: NextRequest) {
           used_service_key: keyPick.name || null,
           hint_zh: "請設定 SUPABASE_URL 與 Service Role（金鑰僅伺服端）",
         },
-        { status: 500 },
+        { status: 500 }
       );
     }
     return callInspect(schema);
   }
-
   return NextResponse.json(diag(), { status: 200 });
 }
 
+// ---- Write to ops.io_requests ----
 export async function POST(req: NextRequest) {
   if (!SUPABASE_URL || !SERVICE_KEY) {
     return NextResponse.json(
-      {
-        ok: false,
-        code: "MISSING_ENV",
-        hint_zh: "請於 Vercel 設定 SUPABASE_URL 與 Service Role（金鑰）",
-      },
-      { status: 500 },
+      { ok: false, code: "MISSING_ENV", hint_zh: "請於 Vercel 設定 SUPABASE_URL 與 Service Role 金鑰" },
+      { status: 500 }
     );
   }
 
   let body: any = {};
   try { body = await req.json(); } catch {}
 
+  const ip =
+    (req.headers.get("x-real-ip") ||
+     req.headers.get("x-forwarded-for") ||
+     "").split(",")[0].trim() || null;
+
   const payload = {
-    source: "r5",
+    op: body?.op ?? "generic",
+    status: body?.status ?? "queued",
+    source: body?.source ?? "r5",
     path: "/_r5/rw-test",
-    note: body?.note ?? null,
-    created_at: new Date().toISOString(),
+    user_id: body?.user_id ?? null,
+    session_id: body?.session_id ?? null,
+    ip,
+    ua: req.headers.get("user-agent") || null,
+    tags: Array.isArray(body?.tags) ? body.tags : null,
+    cost_cents: body?.cost_cents ?? 0,
+    input_tokens: body?.input_tokens ?? null,
+    output_tokens: body?.output_tokens ?? null,
+    payload: body?.payload ?? body ?? null,
+    result: null,
+    error: null,
   };
 
-  const res = await fetch(`${SUPABASE_URL}/rest/v1/r5_rw_log`, {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
     method: "POST",
     headers: {
       apikey: SERVICE_KEY,
@@ -135,26 +143,39 @@ export async function POST(req: NextRequest) {
   }
 
   if (res.status === 404) {
+    // 表/綱要不存在 → 回一次性建表腳本
     return NextResponse.json(
       {
         ok: false,
         code: "TABLE_NOT_FOUND",
-        hint_zh: "請先建立資料表 public.r5_rw_log 後重試",
-        sql: `create table if not exists public.r5_rw_log (
+        hint_zh: "請先建立 ops.io_requests 後重試（已附 SQL）",
+        sql: `-- 一次性建表
+create schema if not exists ops;
+create extension if not exists pgcrypto with schema extensions;
+create table if not exists ops.io_requests (
   id bigserial primary key,
-  source text,
-  path text,
-  note text,
-  created_at timestamptz default now()
-);`,
+  trace_id uuid not null default gen_random_uuid(),
+  op text not null,
+  status text not null default 'queued',
+  source text, path text, user_id uuid, session_id text,
+  ip inet, ua text, tags text[],
+  cost_cents integer default 0,
+  input_tokens integer, output_tokens integer,
+  payload jsonb, result jsonb, error jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+grant usage on schema ops to service_role;
+grant all privileges on all tables in schema ops to service_role;
+grant all privileges on all sequences in schema ops to service_role;`
       },
-      { status: 424 },
+      { status: 424 }
     );
   }
 
   const text = await res.text();
   return NextResponse.json(
     { ok: false, code: "DB_ERROR", status: res.status, body: text.slice(0, 2000) },
-    { status: 502 },
+    { status: 502 }
   );
 }
