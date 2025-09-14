@@ -7,8 +7,9 @@ type Msg = { role: 'user' | 'assistant' | 'system'; content: string }
 
 const MODELS_BASE = (process.env.NEXT_PUBLIC_MODELS_BASE || '/_models').replace(/\/+$/,'')
 const R5_BASE     = (process.env.NEXT_PUBLIC_R5_BASE     || '/_r5').replace(/\/+$/,'')
+
 const DEFAULTS: Record<Provider, string> = {
-  openai: 'gpt-5',
+  openai: 'gpt-5',                // 失敗會自動回退
   deepseek: 'deepseek-chat',
   grok: 'grok-beta',
   gemini: 'gemini-1.5-flash'
@@ -20,35 +21,12 @@ const FALLBACKS: Record<Provider, string> = {
   gemini: 'gemini-1.5-flash'
 }
 
-// ---- 安全解析：盡可能把文字抽出 ----
-function pickText(j: any): string {
-  try {
-    if (!j || typeof j !== 'object') return ''
-    // 直屬欄位
-    for (const k of ['reply','content','text','output','response','result','answer']) {
-      const v = j?.[k]
-      if (typeof v === 'string' && v.trim()) return v
-    }
-    // OpenAI 風格
-    if (Array.isArray(j.choices) && j.choices[0]) {
-      const c = j.choices[0]
-      if (typeof c?.text === 'string' && c.text.trim()) return c.text
-      const msg = c?.message?.content
-      if (typeof msg === 'string' && msg.trim()) return msg
-      if (Array.isArray(msg)) {
-        const s = msg.map((p:any) => (typeof p === 'string' ? p : p?.text || '')).join('')
-        if (s.trim()) return s
-      }
-      const delta = c?.delta?.content
-      if (typeof delta === 'string' && delta.trim()) return delta
-    }
-    // Gemini 風格
-    if (Array.isArray(j.candidates) && j.candidates[0]?.content?.parts) {
-      const s = j.candidates[0].content.parts.map((p:any)=>p?.text||'').join('')
-      if (s.trim()) return s
-    }
-    return ''
-  } catch { return '' }
+// 只有 openai 我們優先嘗試串流；其餘一律走 JSON 最終結果（更穩）
+const SUPPORTS_STREAM: Record<Provider, boolean> = {
+  openai: true,
+  deepseek: false,
+  grok: false,
+  gemini: false,
 }
 
 export default function Chat() {
@@ -65,14 +43,15 @@ export default function Chat() {
   const abortRef = useRef<AbortController | null>(null)
 
   const appendDebug = useCallback((line: string) => {
-    setDebug(prev => [...prev.slice(-199), `[${new Date().toISOString()}] ${line}`])
+    const s = `[${new Date().toISOString()}] ${line}`
+    setDebug(prev => [...prev.slice(-199), s])
     // eslint-disable-next-line no-console
     console.log('[SDK5-UI]', line)
   }, [])
 
   const postUrl = useMemo(() => `${MODELS_BASE}/${provider}/chat`, [provider])
 
-  // -------- 健康檢查 --------
+  // ---- 健康檢查（GET q=ping） ----
   const doPing = useCallback(async () => {
     try {
       appendDebug(`PING ${postUrl}?q=ping`)
@@ -89,121 +68,171 @@ export default function Chat() {
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_MODELS_BASE) {
-      setEnvWarn('NEXT_PUBLIC_MODELS_BASE 未設，已使用預設 /_models')
+      setEnvWarn('NEXT_PUBLIC_MODELS_BASE 未設，已用預設 /_models')
       appendDebug('ENV WARN: NEXT_PUBLIC_MODELS_BASE missing → fallback "/_models"')
     }
     if (!process.env.NEXT_PUBLIC_R5_BASE) {
       appendDebug('ENV INFO: NEXT_PUBLIC_R5_BASE missing → fallback "/_r5"')
     }
     doPing()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider])
 
-  // -------- 發送邏輯（含空回覆守門 ＆ 自動回退）--------
+  // ---- 通用：從各家 JSON 取文本（涵蓋 grok/gemini/自家代理）----
+  function pickText(json: any): string {
+    // 我方代理常見格式
+    if (typeof json?.reply === 'string' && json.reply.trim()) return json.reply
+    if (typeof json?.content === 'string' && json.content.trim()) return json.content
+    if (typeof json?.text === 'string' && json.text.trim()) return json.text
+    if (typeof json?.output === 'string' && json.output.trim()) return json.output
+    if (typeof json?.answer === 'string' && json.answer.trim()) return json.answer
+
+    // OpenAI 風格
+    const oai = json?.choices?.[0]
+    if (typeof oai?.message?.content === 'string' && oai.message.content.trim()) return oai.message.content
+    if (typeof oai?.delta?.content === 'string' && oai.delta.content.trim()) return oai.delta.content
+
+    // Gemini 風格
+    // { candidates: [{ content: { parts: [{ text: '...' }, ...] } }] }
+    const cand = json?.candidates?.[0]
+    const parts = cand?.content?.parts
+    if (Array.isArray(parts)) {
+      const t = parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('')
+      if (t.trim()) return t
+    }
+
+    // Grok / 其他簡單格式
+    if (Array.isArray(json?.messages)) {
+      const last = json.messages[json.messages.length - 1]
+      if (typeof last?.content === 'string' && last.content.trim()) return last.content
+    }
+
+    return ''
+  }
+
+  // ---- 串流 token 行：嘗試解析 JSON delta，否則當純文字 ----
+  function extractTokenFromSSEData(data: string): string {
+    try {
+      const obj = JSON.parse(data)
+      const t = pickText(obj)
+      if (t) return t
+      const delta = obj?.choices?.[0]?.delta?.content
+      if (typeof delta === 'string') return delta
+      return ''
+    } catch {
+      return data // 純文字 token
+    }
+  }
+
   const sendMessage = useCallback(async () => {
     if (!input.trim() || streaming) return
-
     const userMsg: Msg = { role: 'user', content: input.trim() }
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '' }])
     setInput('')
     setStreaming(true)
 
-    const tryOnce = async (tryStream: boolean, useModel: string): Promise<string> => {
+    const tryOnce = async (tryStream: boolean) => {
       abortRef.current?.abort()
       abortRef.current = new AbortController()
       const signal = abortRef.current.signal
 
       const body = JSON.stringify({
-        model: useModel,
+        model,
         stream: tryStream,
-        temperature: 0.2,
         messages: messages.concat(userMsg).map(m => ({ role: m.role, content: m.content }))
       })
 
-      appendDebug(`POST ${postUrl} stream=${tryStream} model=${useModel}`)
+      appendDebug(`POST ${postUrl} stream=${tryStream} model=${model}`)
       const res = await fetch(postUrl, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body,
         signal
       })
-      appendDebug(`POST status=${res.status} ct=${res.headers.get('content-type') || ''}`)
+      const ct = res.headers.get('content-type') || ''
+      appendDebug(`POST status=${res.status} ct=${ct}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
-      const ct = res.headers.get('content-type') || ''
-      // A) 串流（若真的給 SSE）
-      if (tryStream && /text\/event-stream/i.test(ct)) {
-        const reader = res.body!.getReader()
+      // A) SSE 串流
+      if (tryStream && /text\/event-stream/i.test(ct) && res.body) {
+        const reader = res.body.getReader()
         const decoder = new TextDecoder('utf-8')
-        let all = ''
         while (true) {
           const { done, value } = await reader.read()
           if (done) break
           const chunk = decoder.decode(value, { stream: true })
           for (const line of chunk.split('\n')) {
-            const trimmed = line.trim()
-            if (!trimmed.startsWith('data:')) continue
-            const data = trimmed.slice(5).trim()
-            if (!data || data === '[DONE]') continue
-            all += data
+            const s = line.trim()
+            if (!s.startsWith('data:')) continue
+            const token = extractTokenFromSSEData(s.slice(5).trim())
+            if (!token || token === '[DONE]') continue
             setMessages(prev => {
               const last = prev[prev.length - 1]
               const head = prev.slice(0, -1)
-              return [...head, { ...last, content: (last.content || '') + data }]
+              return [...head, { ...last, content: (last.content || '') + token }]
             })
           }
         }
-        return all.trim()
+        return
       }
 
-      // B) 非串流 JSON
-      const raw = await res.text()
-      let json: any = {}
-      try { json = JSON.parse(raw) } catch {}
-      appendDebug(`JSON keys=${Object.keys(json || {}).join(',') || '(none)'} len=${raw.length}`)
-      const text = pickText(json)
-      return (typeof text === 'string' ? text : '').trim()
-    }
+      // B) 純文字
+      if (/^text\/plain/i.test(ct)) {
+        const txt = await res.text()
+        const out = (txt || '').trim()
+        appendDebug(`TEXT len=${out.length}`)
+        setMessages(prev => {
+          const last = prev[prev.length - 1]
+          const head = prev.slice(0, -1)
+          return [...head, { ...last, content: out || '[空回覆]' }]
+        })
+        return
+      }
 
-    const writeAnswer = (text: string) => {
+      // C) JSON 最終結果（grok/gemini/代理常見）
+      const json = await res.json().catch(() => ({} as any))
+      const out = pickText(json)
+      appendDebug(`JSON keys=${Object.keys(json)} picked_len=${out.length}`)
       setMessages(prev => {
         const last = prev[prev.length - 1]
         const head = prev.slice(0, -1)
-        return [...head, { ...last, content: text }]
+        return [...head, { ...last, content: out || '[空回覆]' }]
       })
     }
 
     try {
-      // 先試：串流
-      let text = await tryOnce(true, model)
-      if (!text) {
-        appendDebug('EMPTY_REPLY(stream) → switch to JSON mode')
-        text = await tryOnce(false, model)
-      }
-      if (!text && provider === 'openai' && model !== FALLBACKS.openai) {
-        appendDebug(`EMPTY_REPLY(json) → MODEL FALLBACK ${model} → ${FALLBACKS.openai}`)
-        const fb = await tryOnce(false, FALLBACKS.openai)
-        if (fb) {
+      // 對 openai 試串流；其他供應商直接 JSON（更穩）
+      const wantStream = SUPPORTS_STREAM[provider]
+      await tryOnce(wantStream)
+    } catch (eA) {
+      appendDebug(`PRIMARY FAIL → fallback JSON (${(eA as any)?.message || eA})`)
+      try {
+        await tryOnce(false)
+      } catch (eB) {
+        if (provider === 'openai' && model !== FALLBACKS.openai) {
+          appendDebug(`MODEL FALLBACK openai: ${model} → ${FALLBACKS.openai}`)
           setModel(FALLBACKS.openai)
-          writeAnswer(`${fb}`)
-          return
+          try { await tryOnce(false) } catch (eC) {
+            appendDebug(`ALL FAIL: ${(eC as any)?.message || eC}`)
+            setMessages(prev => {
+              const last = prev[prev.length - 1]; const head = prev.slice(0, -1)
+              return [...head, { ...last, content: `【錯誤】${(eC as any)?.message || eC}` }]
+            })
+          }
+        } else {
+          appendDebug(`ALL FAIL: ${(eB as any)?.message || eB}`)
+          setMessages(prev => {
+            const last = prev[prev.length - 1]; const head = prev.slice(0, -1)
+            return [...head, { ...last, content: `【錯誤】${(eB as any)?.message || eB}` }]
+          })
         }
       }
-      if (!text) {
-        appendDebug('EMPTY_REPLY(final) → show placeholder')
-        writeAnswer('（這次回覆是空的，已記錄日誌）')
-      } else {
-        writeAnswer(text)
-      }
-    } catch (e: any) {
-      appendDebug(`ALL FAIL: ${e?.message || e}`)
-      writeAnswer(`【錯誤】${e?.message || e}`)
     } finally {
       setStreaming(false)
     }
-  }, [input, streaming, messages, model, provider, postUrl, appendDebug])
+  }, [appendDebug, messages, model, postUrl, provider, streaming, input])
 
-  // -------- UI --------
+  // ---- UI ----
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col">
       <header className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b border-neutral-200">
@@ -221,19 +250,19 @@ export default function Chat() {
         <label className="text-sm">
           <span className="block mb-1 text-neutral-600">供應商</span>
         <select
-          className="w-full border rounded-md px-3 py-2"
-          value={provider}
-          onChange={(e) => {
-            const p = e.target.value as Provider
-            setProvider(p)
-            setModel(DEFAULTS[p])
-          }}
-        >
-          <option value="openai">openai</option>
-          <option value="deepseek">deepseek</option>
-          <option value="grok">grok</option>
-          <option value="gemini">gemini</option>
-        </select>
+            className="w-full border rounded-md px-3 py-2"
+            value={provider}
+            onChange={(e) => {
+              const p = e.target.value as Provider
+              setProvider(p)
+              setModel(DEFAULTS[p])
+            }}
+          >
+            <option value="openai">openai</option>
+            <option value="deepseek">deepseek</option>
+            <option value="grok">grok</option>
+            <option value="gemini">gemini</option>
+          </select>
         </label>
         <label className="text-sm sm:col-span-2">
           <span className="block mb-1 text-neutral-600">模型</span>
@@ -250,8 +279,9 @@ export default function Chat() {
         <ul className="space-y-3">
           {messages.filter(m => m.role !== 'system').map((m, i) => (
             <li key={i} className={m.role === 'user' ? 'text-right' : ''}>
-              <div className={`inline-block rounded-2xl px-3 py-2 text-sm leading-relaxed ${
-                m.role === 'user' ? 'bg-blue-600 text-white' : 'bg-neutral-200 text-neutral-900'
+              <div className={`inline-block rounded-2xl px-3 py-2 text-sm leading-relaxed ${m.role === 'user'
+                ? 'bg-blue-600 text-white'
+                : 'bg-neutral-200 text-neutral-900'
               }`}>
                 {m.content}
               </div>
