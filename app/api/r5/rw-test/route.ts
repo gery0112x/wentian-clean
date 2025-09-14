@@ -1,10 +1,8 @@
-// app/api/r5/risk/route.ts
+// app/api/r5/rw-test/route.ts
 import { NextRequest, NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const TABLE = "ops.risk_cards";
 
 function pick(names: string[]) {
   for (const n of names) {
@@ -13,6 +11,7 @@ function pick(names: string[]) {
   }
   return { name: "", value: "" };
 }
+
 const urlPick = pick(["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_URL"]);
 const keyPick = pick([
   "SUPABASE_SERVICE_ROLE",
@@ -21,114 +20,80 @@ const keyPick = pick([
   "SERVICE_ROLE",
 ]);
 
-function diag(extra: any = {}) {
+const SUPABASE_URL = urlPick.value || "";
+const SERVICE_KEY  = keyPick.value || "";
+const TABLE = "ops.io_requests"; // 正式表
+
+/** 僅回診斷資訊，避免與回應最外層 ok 重複鍵 */
+function meta(extra: any = {}) {
   return {
-    ok: Boolean(urlPick.value && keyPick.value),
     diag: {
-      has_url: Boolean(urlPick.value),
-      has_service_key: Boolean(keyPick.value),
+      has_url: Boolean(SUPABASE_URL),
+      has_service_key: Boolean(SERVICE_KEY),
       used_url_key: urlPick.name || null,
       used_service_key: keyPick.name || null,
       table: TABLE,
-      hint_zh: "POST 上傳/覆寫風險卡；GET ?id= 查詢；GET ?health=1 健檢",
+      hint_zh: "POST 寫入正式表；GET ?inspect=1&schema=public 可列 DB/排程",
       ...extra,
     },
   };
 }
 
-async function rest(path: string, init?: RequestInit) {
-  return fetch(`${urlPick.value}${path}`, {
-    ...init,
+async function rpcInspect(schema: string | null) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/rpc/r5_inspect`, {
+    method: "POST",
     headers: {
-      apikey: keyPick.value,
-      Authorization: `Bearer ${keyPick.value}`,
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
       "Content-Type": "application/json",
-      ...(init?.headers || {}),
     },
+    body: JSON.stringify({ p_schema: schema }),
     cache: "no-store",
   });
-}
 
-/* -------- GET --------
-   - /_r5/risk?health=1          健檢（含表可視性）
-   - /_r5/risk?id=risk.MCP       取單卡
-   - /_r5/risk                   列最新 50 張
-*/
-export async function GET(req: NextRequest) {
-  const q = new URL(req.url).searchParams;
-  const health = q.get("health");
-  const id = q.get("id");
-
-  if (!urlPick.value || !keyPick.value) {
+  if (res.status === 404) {
     return NextResponse.json(
-      { ok: false, code: "MISSING_ENV", ...diag() },
-      { status: 500 }
+      {
+        ok: false,
+        code: "RPC_NOT_FOUND",
+        ...meta(),
+        hint_zh: "請先建立函式 public.r5_inspect",
+      },
+      { status: 424 }
     );
   }
-
-  if (health) {
-    // 嘗試讀 1 列判斷 PostgREST 是否看得到 ops.risk_cards
-    const res = await rest(`/rest/v1/${TABLE}?select=id&limit=1`);
-    if (res.status === 404) {
-      return NextResponse.json(
-        {
-          ok: false,
-          code: "TABLE_NOT_VISIBLE",
-          ...diag(),
-          fix_zh:
-            "PostgREST 尚未暴露 ops schema；請在 SQL Editor 執行 alter role authenticator ... pgrst.db_schemas 加入 ops 並 reload",
-          sql: `alter role authenticator in database postgres
-  set pgrst.db_schemas = 'public,storage,graphql_public,extensions,ops';
-select pg_notify('pgrst','reload config');`,
-        },
-        { status: 424 }
-      );
-    }
-    // 200/206 視為可見
-    return NextResponse.json(diag({ visible: true }), { status: 200 });
-  }
-
-  if (id) {
-    const res = await rest(
-      `/rest/v1/${TABLE}?id=eq.${encodeURIComponent(id)}&select=*`
-    );
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      return NextResponse.json(
-        { ok: false, code: "READ_ERROR", status: res.status, body: data },
-        { status: 502 }
-      );
-    }
-    return NextResponse.json({ ...diag(), data }, { status: 200 });
-  }
-
-  // list
-  const res = await rest(`/rest/v1/${TABLE}?select=id,name,version,updated_at&order=updated_at.desc&limit=50`);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     return NextResponse.json(
-      { ok: false, code: "LIST_ERROR", status: res.status, body: data },
+      { ok: false, code: "RPC_ERROR", status: res.status, body: data, ...meta() },
       { status: 502 }
     );
   }
-  return NextResponse.json({ ...diag(), data }, { status: 200 });
+  return NextResponse.json({ ok: true, ...meta({ schema }), data }, { status: 200 });
 }
 
-/* -------- POST --------
-   Body（JSON）：
-   {
-     "id":"risk.MCP",
-     "name":"MCP 模組風險卡",
-     "version":"v1.0",
-     "updated_at":"2025-09-14T12:00:00Z",   // 你原本 +08:00 這裡可用 UTC
-     "checksum":"MCP_risk_v1_0",
-     "card":{ ... 原始卡片 JSON（含 risks…） ... }
-   }
-*/
+export async function GET(req: NextRequest) {
+  const url = new URL(req.url);
+  const inspect = url.searchParams.get("inspect");
+  const schema = url.searchParams.get("schema");
+
+  if (inspect) {
+    if (!SUPABASE_URL || !SERVICE_KEY) {
+      return NextResponse.json(
+        { ok: false, code: "MISSING_ENV", ...meta() },
+        { status: 500 }
+      );
+    }
+    return rpcInspect(schema);
+  }
+
+  return NextResponse.json({ ok: true, ...meta() }, { status: 200 });
+}
+
 export async function POST(req: NextRequest) {
-  if (!urlPick.value || !keyPick.value) {
+  if (!SUPABASE_URL || !SERVICE_KEY) {
     return NextResponse.json(
-      { ok: false, code: "MISSING_ENV", ...diag() },
+      { ok: false, code: "MISSING_ENV", ...meta() },
       { status: 500 }
     );
   }
@@ -136,77 +101,89 @@ export async function POST(req: NextRequest) {
   let body: any = {};
   try { body = await req.json(); } catch {}
 
-  // 基本驗證
-  const missing = ["id", "name", "version", "updated_at", "card"].filter(
-    (k) => !body?.[k]
-  );
-  if (missing.length) {
-    return NextResponse.json(
-      { ok: false, code: "INVALID_INPUT", missing, hint_zh: "必填欄位缺失" },
-      { status: 400 }
-    );
-  }
+  const ip =
+    (req.headers.get("x-real-ip") ||
+     req.headers.get("x-forwarded-for") ||
+     "").split(",")[0].trim() || null;
 
-  // 準備 upsert（on_conflict=id）
-  const rec = {
-    id: String(body.id),
-    name: String(body.name),
-    version: String(body.version),
-    checksum: body.checksum ?? null,
-    updated_at: body.updated_at,
-    card: body.card,
+  const payload = {
+    op: body?.op ?? "generic",
+    status: body?.status ?? "queued",
+    source: body?.source ?? "r5",
+    path: "/_r5/rw-test",
+    user_id: body?.user_id ?? null,
+    session_id: body?.session_id ?? null,
+    ip,
+    ua: req.headers.get("user-agent") || null,
+    tags: Array.isArray(body?.tags) ? body.tags : null,
+    cost_cents: body?.cost_cents ?? 0,
+    input_tokens: body?.input_tokens ?? null,
+    output_tokens: body?.output_tokens ?? null,
+    payload: body?.payload ?? body ?? null,
+    result: null,
+    error: null,
   };
 
-  const res = await rest(
-    `/rest/v1/${TABLE}?on_conflict=id`,
-    {
-      method: "POST",
-      headers: { Prefer: "return=representation,resolution=merge-duplicates" },
-      body: JSON.stringify(rec),
-    }
-  );
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${TABLE}`, {
+    method: "POST",
+    headers: {
+      apikey: SERVICE_KEY,
+      Authorization: `Bearer ${SERVICE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify(payload),
+    cache: "no-store",
+  });
 
-  if (res.status === 201 || res.status === 200) {
+  if (res.status === 201) {
     const rows = await res.json().catch(() => []);
-    return NextResponse.json(
-      { ok: true, db_status: res.status, rows },
-      { status: 201 }
-    );
+    return NextResponse.json({ ok: true, db_status: 201, rows, ...meta() }, { status: 201 });
   }
 
   if (res.status === 404) {
-    // 表/可見性問題 → 回自救腳本
     return NextResponse.json(
       {
         ok: false,
         code: "TABLE_NOT_FOUND",
-        hint_zh: "風險表不存在或未暴露；請先在 SQL Editor 建表並將 ops 納入 pgrst.db_schemas",
-        sql: `-- 建表
+        hint_zh: "請先建立 ops.io_requests，並確保 ops 已暴露到 PostgREST",
+        sql: `-- 建表 + 權限
 create schema if not exists ops;
-create table if not exists ops.risk_cards (
-  id text primary key,
-  name text not null,
-  version text not null,
-  checksum text,
-  updated_at timestamptz not null default now(),
-  card jsonb not null,
-  created_at timestamptz not null default now(),
-  touched_at timestamptz not null default now()
+create extension if not exists pgcrypto with schema extensions;
+create table if not exists ops.io_requests (
+  id bigserial primary key,
+  trace_id uuid default gen_random_uuid(),
+  op text, status text default 'queued',
+  source text, path text, user_id uuid, session_id text,
+  ip inet, ua text, tags text[],
+  cost_cents integer default 0,
+  input_tokens integer, output_tokens integer,
+  payload jsonb, result jsonb, error jsonb,
+  created_at timestamptz default now(), updated_at timestamptz default now()
 );
 grant usage on schema ops to service_role;
-grant select, insert, update on ops.risk_cards to service_role;
--- 暴露 ops：
+grant all privileges on all tables in schema ops to service_role;
+grant all privileges on all sequences in schema ops to service_role;
+-- 暴露 ops
 alter role authenticator in database postgres
   set pgrst.db_schemas = 'public,storage,graphql_public,extensions,ops';
 select pg_notify('pgrst','reload config');`,
+        ...meta(),
       },
       { status: 424 }
     );
   }
 
-  const txt = await res.text();
+  const text = await res.text();
   return NextResponse.json(
-    { ok: false, code: "DB_ERROR", status: res.status, body: txt.slice(0, 2000) },
+    { ok: false, code: "DB_ERROR", status: res.status, body: text.slice(0, 2000), ...meta() },
     { status: 502 }
   );
+}
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 204,
+    headers: { "Access-Control-Allow-Methods": "GET,POST,OPTIONS" },
+  });
 }
