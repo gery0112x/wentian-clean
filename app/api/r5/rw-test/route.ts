@@ -17,7 +17,7 @@ const keyPick = pick([
   "SUPABASE_SERVICE_ROLE",
   "SUPABASE_SERVICE_ROLE_KEY",
   "SUPABASE_SERVICE_KEY",
-  "SERVICE_ROLE"
+  "SERVICE_ROLE",
 ]);
 
 const SUPABASE_URL = urlPick.value || "";
@@ -33,8 +33,8 @@ function diag(extra: any = {}) {
       used_service_key: keyPick.name || null,
       table: "public.r5_rw_log",
       hint_zh: "POST 可寫入；GET ?inspect=1 可列出資料庫/排程",
-      ...extra
-    }
+      ...extra,
+    },
   };
 }
 
@@ -44,9 +44,9 @@ async function callInspect(schema: string | null) {
     headers: {
       apikey: SERVICE_KEY,
       Authorization: `Bearer ${SERVICE_KEY}`,
-      "Content-Type": "application/json"
+      "Content-Type": "application/json",
     },
-    body: JSON.stringify({ p_schema: schema })
+    body: JSON.stringify({ p_schema: schema }),
   });
 
   if (res.status === 404) {
@@ -54,9 +54,9 @@ async function callInspect(schema: string | null) {
       {
         ok: false,
         code: "RPC_NOT_FOUND",
-        hint_zh: "Supabase 端尚未建立函式 public.r5_inspect（請在 SQL Editor 先執行建立 SQL）"
+        hint_zh: "Supabase 尚未建立 public.r5_inspect（請在 SQL Editor 先建立）",
       },
-      { status: 424 }
+      { status: 424 },
     );
   }
 
@@ -64,14 +64,12 @@ async function callInspect(schema: string | null) {
   if (!res.ok) {
     return NextResponse.json(
       { ok: false, code: "RPC_ERROR", status: res.status, body: data },
-      { status: 502 }
+      { status: 502 },
     );
   }
 
-  return NextResponse.json(
-    { ok: true, ...diag({ schema }), data },
-    { status: 200 }
-  );
+  // 修正點：不要再加 ok:true，改為展開 diag（內含 ok）
+  return NextResponse.json({ ...diag({ schema }), data }, { status: 200 });
 }
 
 export async function GET(req: NextRequest) {
@@ -87,9 +85,9 @@ export async function GET(req: NextRequest) {
           code: "MISSING_ENV",
           used_url_key: urlPick.name || null,
           used_service_key: keyPick.name || null,
-          hint_zh: "請設定 SUPABASE_URL + Service Role（金鑰僅伺服端）"
+          hint_zh: "請設定 SUPABASE_URL 與 Service Role（金鑰僅伺服端）",
         },
-        { status: 500 }
+        { status: 500 },
       );
     }
     return callInspect(schema);
@@ -104,9 +102,9 @@ export async function POST(req: NextRequest) {
       {
         ok: false,
         code: "MISSING_ENV",
-        hint_zh: "請於 Vercel 設定 SUPABASE_URL 與 Service Role（金鑰）"
+        hint_zh: "請於 Vercel 設定 SUPABASE_URL 與 Service Role（金鑰）",
       },
-      { status: 500 }
+      { status: 500 },
     );
   }
 
@@ -117,7 +115,7 @@ export async function POST(req: NextRequest) {
     source: "r5",
     path: "/_r5/rw-test",
     note: body?.note ?? null,
-    created_at: new Date().toISOString()
+    created_at: new Date().toISOString(),
   };
 
   const res = await fetch(`${SUPABASE_URL}/rest/v1/r5_rw_log`, {
@@ -126,9 +124,9 @@ export async function POST(req: NextRequest) {
       apikey: SERVICE_KEY,
       Authorization: `Bearer ${SERVICE_KEY}`,
       "Content-Type": "application/json",
-      Prefer: "return=representation"
+      Prefer: "return=representation",
     },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
   });
 
   if (res.status === 201) {
@@ -148,15 +146,15 @@ export async function POST(req: NextRequest) {
   path text,
   note text,
   created_at timestamptz default now()
-);`
+);`,
       },
-      { status: 424 }
+      { status: 424 },
     );
   }
 
   const text = await res.text();
   return NextResponse.json(
     { ok: false, code: "DB_ERROR", status: res.status, body: text.slice(0, 2000) },
-    { status: 502 }
+    { status: 502 },
   );
 }
