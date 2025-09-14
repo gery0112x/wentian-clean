@@ -1,5 +1,5 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+// /next.config.mjs
+export default {
   async rewrites() {
     return [
       { source: '/_models/openai/:path*',  destination: '/api/openai/:path*'  },
@@ -9,8 +9,5 @@ const nextConfig = {
       { source: '/_r5/:path*',             destination: '/api/r5/:path*'      },
     ];
   },
-  async redirects() {
-    return [{ source: '/', destination: '/home', permanent: false }];
-  },
-};
-export default nextConfig;
+  async redirects() { return [{ source: '/', destination: '/home', permanent: false }]; },
+}
