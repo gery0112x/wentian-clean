@@ -25,8 +25,8 @@ const SUPPORTS_STREAM: Record<Provider, boolean> = {
 }
 
 export default function Chat() {
-  const [provider, setProvider] = useState<Provider>('openai')
-  const [model, setModel] = useState<string>(DEFAULTS.openai)
+  const [provider, setProvider] = useState<Provider>('gemini') // 預設可用者
+  const [model, setModel] = useState<string>(DEFAULTS.gemini)
   const [input, setInput] = useState('')
   const [messages, setMessages] = useState<Msg[]>([
     { role: 'system', content: '你是無極入口的助理，回覆中文白話、簡潔直觀。' }
@@ -37,11 +37,11 @@ export default function Chat() {
   const [debug, setDebug] = useState<string[]>([])
   const abortRef = useRef<AbortController | null>(null)
 
-  const appendDebug = useCallback((line: string) => {
-    const s = `[${new Date().toISOString()}] ${line}`
-    setDebug(prev => [...prev.slice(-199), s])
+  const log = useCallback((s: string) => {
+    const line = `[${new Date().toISOString()}] ${s}`
+    setDebug(prev => [...prev.slice(-199), line])
     // eslint-disable-next-line no-console
-    console.log('[SDK5-UI]', line)
+    console.log('[SDK5-UI]', s)
   }, [])
 
   const postUrl = useMemo(() => `${MODELS_BASE}/${provider}/chat`, [provider])
@@ -49,214 +49,176 @@ export default function Chat() {
   // ---- 健康檢查 ----
   const doPing = useCallback(async () => {
     try {
-      appendDebug(`PING ${postUrl}?q=ping`)
+      log(`PING ${postUrl}?q=ping`)
       const res = await fetch(`${postUrl}?q=ping`, { method: 'GET', cache: 'no-store' })
-      appendDebug(`PING status=${res.status}`)
+      log(`PING status=${res.status}`)
       setPingOk(res.ok ? 'ok' : 'fail')
       return res.ok
     } catch (e: any) {
-      appendDebug(`PING error=${e?.message || e}`)
-      setPingOk('fail')
-      return false
+      log(`PING error=${e?.message || e}`)
+      setPingOk('fail'); return false
     }
-  }, [postUrl, appendDebug])
+  }, [postUrl, log])
 
   useEffect(() => {
-    if (!process.env.NEXT_PUBLIC_MODELS_BASE) {
-      setEnvWarn('NEXT_PUBLIC_MODELS_BASE 未設，已用預設 /_models')
-      appendDebug('ENV WARN: NEXT_PUBLIC_MODELS_BASE missing → fallback "/_models"')
-    }
-    if (!process.env.NEXT_PUBLIC_R5_BASE) appendDebug('ENV INFO: NEXT_PUBLIC_R5_BASE missing → fallback "/_r5"')
+    if (!process.env.NEXT_PUBLIC_MODELS_BASE) { setEnvWarn('NEXT_PUBLIC_MODELS_BASE 未設，已用 /_models'); log('ENV fallback MODELS=/ _models') }
+    if (!process.env.NEXT_PUBLIC_R5_BASE) { log('ENV fallback R5=/ _r5') }
     doPing()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [provider])
 
-  // ---- 通用取字（涵蓋 gateway / openai / gemini / grok 常見格式）----
+  // ---- 取字：容忍各家 JSON ----
   function pickText(json: any): string {
     if (!json || typeof json !== 'object') return ''
-    const prim = ['reply','content','text','output','answer'].map(k => (typeof json[k] === 'string' ? json[k] : '')).find(s => s && s.trim())
-    if (prim) return prim
+    for (const k of ['reply','content','text','output','answer']) {
+      const v = json?.[k]; if (typeof v === 'string' && v.trim()) return v
+    }
     const oai = json?.choices?.[0]
-    if (typeof oai?.message?.content === 'string' && oai.message.content.trim()) return oai.message.content
-    if (typeof oai?.delta?.content === 'string' && oai.delta.content.trim()) return oai.delta.content
-    const cand = json?.candidates?.[0]
-    const parts = cand?.content?.parts
+    if (oai?.message?.content && typeof oai.message.content === 'string') return oai.message.content
+    if (oai?.delta?.content   && typeof oai.delta.content   === 'string') return oai.delta.content
+    const parts = json?.candidates?.[0]?.content?.parts
     if (Array.isArray(parts)) {
-      const t = parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('')
-      if (t.trim()) return t
+      const t = parts.map((p:any)=>p?.text||'').join(''); if (t.trim()) return t
     }
     if (Array.isArray(json?.messages)) {
-      const last = json.messages.at(-1)
-      if (typeof last?.content === 'string' && last.content.trim()) return last.content
+      const last = json.messages.at(-1); if (typeof last?.content === 'string') return last.content
     }
     return ''
   }
   function tokenFromSSE(data: string): string {
-    try {
-      const obj = JSON.parse(data)
-      return pickText(obj) || (obj?.choices?.[0]?.delta?.content ?? '')
-    } catch { return data }
+    try { const o = JSON.parse(data); return pickText(o) || (o?.choices?.[0]?.delta?.content ?? '') }
+    catch { return data }
   }
 
-  // ---- 發送（A: messages 模式 → 若空/錯誤再 B: q 模式）----
+  // ---- 發送：A messages → 若空/錯誤再 B q ----
   const sendMessage = useCallback(async () => {
     if (!input.trim() || streaming) return
     const userMsg: Msg = { role: 'user', content: input.trim() }
     setMessages(prev => [...prev, userMsg, { role: 'assistant', content: '' }])
-    setInput('')
-    setStreaming(true)
+    setInput(''); setStreaming(true)
 
-    const callOnce = async (mode: 'messages'|'q', tryStream: boolean) => {
-      abortRef.current?.abort()
-      abortRef.current = new AbortController()
+    const callOnce = async (mode:'messages'|'q', tryStream:boolean) => {
+      abortRef.current?.abort(); abortRef.current = new AbortController()
       const signal = abortRef.current.signal
-
-      const body = mode === 'messages'
-        ? { model, stream: tryStream, messages: messages.concat(userMsg).map(m => ({ role: m.role, content: m.content })) }
+      const body = mode==='messages'
+        ? { model, stream: tryStream, messages: messages.concat(userMsg).map(m=>({role:m.role, content:m.content})) }
         : { model, q: userMsg.content }
 
-      appendDebug(`POST ${postUrl} mode=${mode} stream=${tryStream} model=${model}`)
-      const res = await fetch(postUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal })
+      log(`POST ${postUrl} mode=${mode} stream=${tryStream} model=${model}`)
+      const res = await fetch(postUrl, { method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body), signal })
       const ct = res.headers.get('content-type') || ''
-      appendDebug(`RESP status=${res.status} ct=${ct}`)
+      log(`RESP status=${res.status} ct=${ct}`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
 
       if (tryStream && /text\/event-stream/i.test(ct) && res.body) {
-        const reader = res.body.getReader()
-        const dec = new TextDecoder('utf-8')
-        let anyToken = false
+        const reader = res.body.getReader(); const dec = new TextDecoder('utf-8'); let any=false
         while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          const chunk = dec.decode(value, { stream: true })
+          const {done,value}=await reader.read(); if (done) break
+          const chunk = dec.decode(value,{stream:true})
           for (const line of chunk.split('\n')) {
-            const s = line.trim()
-            if (!s.startsWith('data:')) continue
-            const tok = tokenFromSSE(s.slice(5).trim())
-            if (!tok || tok === '[DONE]') continue
-            anyToken = true
-            setMessages(prev => {
-              const last = prev[prev.length - 1]; const head = prev.slice(0, -1)
-              return [...head, { ...last, content: (last.content || '') + tok }]
-            })
+            const s=line.trim(); if (!s.startsWith('data:')) continue
+            const tok = tokenFromSSE(s.slice(5).trim()); if (!tok || tok==='[DONE]') continue
+            any=true; setMessages(prev=>{ const last=prev.at(-1)!; return [...prev.slice(0,-1),{...last,content:(last.content||'')+tok}] })
           }
         }
-        if (!anyToken) appendDebug('STREAM no tokens')
-        return anyToken ? 'ok' : 'empty'
+        if (!any) log('STREAM no tokens'); return any?'ok':'empty'
       }
-
       if (/^text\/plain/i.test(ct)) {
-        const txt = (await res.text()).trim()
-        setMessages(prev => { const last = prev.at(-1)!; return [...prev.slice(0,-1), { ...last, content: txt || '[空回覆]' }] })
-        return txt ? 'ok' : 'empty'
+        const t=(await res.text()).trim()
+        setMessages(prev=>{ const last=prev.at(-1)!; return [...prev.slice(0,-1),{...last,content:t||'[空回覆]'}] })
+        return t?'ok':'empty'
       }
-
-      const json = await res.json().catch(() => ({} as any))
-      const out = pickText(json)
-      const diag = { ok: json?.ok, status: json?.status, cap: json?.cap_notice, keys: Object.keys(json) }
-      appendDebug(`JSON diag=${JSON.stringify(diag)} picked_len=${out?.length || 0}`)
+      const json = await res.json().catch(()=>({}))
+      const out = pickText(json); log(`JSON diag=${JSON.stringify({ok:json?.ok,status:json?.status,cap:json?.cap_notice})} len=${out?.length||0}`)
       if (!out) {
-        // 把 gateway 的錯誤/上蓋訊息印在泡泡裡，避免「看起來沒回覆」
-        const errNote = json?.error || json?.message || (diag.cap ? `cap_notice=${diag.cap}` : '')
-        setMessages(prev => { const last = prev.at(-1)!; return [...prev.slice(0,-1), { ...last, content: errNote ? `【空回覆｜診斷】${errNote}` : '[空回覆]' }] })
+        const err = json?.error || json?.message || (json?.cap_notice ? `cap_notice=${json.cap_notice}` : '')
+        setMessages(prev=>{ const last=prev.at(-1)!; return [...prev.slice(0,-1),{...last,content: err?`【空回覆｜診斷】${err}`:'[空回覆]'}] })
         return 'empty'
       }
-      setMessages(prev => { const last = prev.at(-1)!; return [...prev.slice(0,-1), { ...last, content: out }] })
+      setMessages(prev=>{ const last=prev.at(-1)!; return [...prev.slice(0,-1),{...last,content:out}] })
       return 'ok'
     }
 
     try {
-      const wantStream = SUPPORTS_STREAM[provider]
-      const r1 = await callOnce('messages', wantStream)   // 先 messages
-      if (r1 === 'ok') return
-      appendDebug(`FALLBACK → mode=q (因 ${r1})`)
-      const r2 = await callOnce('q', false)               // 再 q
-      if (r2 === 'ok') return
-      if (provider === 'openai' && model !== FALLBACKS.openai) {
-        appendDebug(`MODEL FALLBACK openai: ${model} → ${FALLBACKS.openai}`)
-        setModel(FALLBACKS.openai)
-        await callOnce('q', false)
-      }
-    } catch (e: any) {
-      appendDebug(`ALL FAIL: ${e?.message || e}`)
-      setMessages(prev => {
-        const last = prev.at(-1)!; return [...prev.slice(0,-1), { ...last, content: `【錯誤】${e?.message || e}` }]
-      })
-    } finally {
-      setStreaming(false)
-    }
-  }, [appendDebug, messages, model, postUrl, provider, streaming, input])
+      const r1 = await callOnce('messages', SUPPORTS_STREAM[provider])
+      if (r1==='ok') return
+      log(`FALLBACK → mode=q (因 ${r1})`)
+      await callOnce('q', false)
+    } catch (e:any) {
+      log(`ALL FAIL: ${e?.message||e}`)
+      setMessages(prev=>{ const last=prev.at(-1)!; return [...prev.slice(0,-1),{...last,content:`【錯誤】${e?.message||e}`}] })
+    } finally { setStreaming(false) }
+  }, [input, streaming, messages, model, provider, postUrl, log])
 
-  // ---- UI ----
   return (
-    <div className="min-h-screen bg-neutral-50 text-neutral-900 flex flex-col">
-      <header className="sticky top-0 z-10 bg-white/90 backdrop-blur border-b">
-        <div className="mx-auto max-w-3xl px-4 py-3 flex items-center justify-between">
-          <div className="font-bold">無極入口 · SDK5 殼</div>
-          <div className="text-xs text-neutral-500">MODELS_BASE={MODELS_BASE} · R5_BASE={R5_BASE}</div>
-        </div>
+    <div className="shell">
+      <header className="head">
+        <div className="title">無極入口 · SDK5 殼</div>
+        <div className="meta">MODELS_BASE={MODELS_BASE} · R5_BASE={R5_BASE}</div>
       </header>
 
-      {envWarn && <div className="mx-auto max-w-3xl w-full px-4 py-2 bg-amber-50 text-amber-800 text-sm">{envWarn}</div>}
+      {envWarn && <div className="warn">{envWarn}</div>}
 
-      <section className="mx-auto max-w-3xl w-full px-4 py-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <label className="text-sm">
-          <span className="block mb-1 text-neutral-600">供應商</span>
-          <select className="w-full border rounded-md px-3 py-2"
-            value={provider}
-            onChange={(e) => { const p = e.target.value as Provider; setProvider(p); setModel(DEFAULTS[p]) }}>
-            <option value="openai">openai</option>
-            <option value="deepseek">deepseek</option>
-            <option value="grok">grok</option>
+      <section className="controls">
+        <label>
+          <span>供應商（Gemini預設，其它實驗中）</span>
+          <select value={provider} onChange={e=>{ const p=e.target.value as Provider; setProvider(p); setModel(DEFAULTS[p]) }}>
             <option value="gemini">gemini</option>
+            <option value="openai">openai（實驗）</option>
+            <option value="deepseek">deepseek（實驗）</option>
+            <option value="grok">grok（實驗）</option>
           </select>
         </label>
-        <label className="text-sm sm:col-span-2">
-          <span className="block mb-1 text-neutral-600">模型</span>
-          <input className="w-full border rounded-md px-3 py-2"
-            value={model} onChange={(e) => setModel(e.target.value)} placeholder={DEFAULTS[provider]} />
+        <label className="model">
+          <span>模型</span>
+          <input value={model} onChange={e=>setModel(e.target.value)} placeholder={DEFAULTS[provider]} />
         </label>
+        <button onClick={doPing} className="ping">健康檢查 {pingOk==='ok'?'✅':pingOk==='fail'?'❌':'…'}</button>
       </section>
 
-      <main className="mx-auto max-w-3xl w-full px-4 flex-1 pb-28">
-        <ul className="space-y-3">
-          {messages.filter(m => m.role !== 'system').map((m, i) => (
-            <li key={i} className={m.role === 'user' ? 'text-right' : ''}>
-              <div className={`inline-block rounded-2xl px-3 py-2 text-sm leading-relaxed ${m.role === 'user'
-                ? 'bg-blue-600 text-white' : 'bg-neutral-200 text-neutral-900'}`}>
-                {m.content}
-              </div>
-            </li>
-          ))}
-        </ul>
+      <main className="msgs">
+        {messages.filter(m=>m.role!=='system').map((m,i)=>(
+          <div key={i} className={`bubble ${m.role}`}>{m.content}</div>
+        ))}
       </main>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t">
-        <div className="mx-auto max-w-3xl px-4 py-3 flex gap-2">
-          <button onClick={doPing}
-            className="px-3 py-2 text-xs rounded-md border bg-neutral-50 hover:bg-neutral-100"
-            title="健康檢查：GET /_models/<provider>/chat?q=ping">
-            健康檢查 {pingOk === 'ok' ? '✅' : pingOk === 'fail' ? '❌' : '…'}
-          </button>
-          <input className="flex-1 border rounded-md px-3 py-2"
-            placeholder="輸入訊息…（中文白話）"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) sendMessage() }} />
-          <button onClick={sendMessage} disabled={streaming || !input.trim()}
-            className="px-4 py-2 rounded-md bg-blue-600 text-white disabled:opacity-50">
-            送出
-          </button>
-        </div>
-        <div className="mx-auto max-w-3xl px-4 pb-3">
-          <details className="text-xs text-neutral-500">
-            <summary>除錯紀錄 / Debug logs</summary>
-            <pre className="whitespace-pre-wrap break-words max-h-40 overflow-auto border rounded-md p-2 bg-neutral-50">
-{debug.join('\n')}
-            </pre>
-          </details>
-        </div>
-      </div>
+      <footer className="composer">
+        <input
+          placeholder="輸入訊息…（中文白話）"
+          value={input}
+          onChange={e=>setInput(e.target.value)}
+          onKeyDown={e=>{ if (e.key==='Enter' && !e.shiftKey) sendMessage() }}
+        />
+        <button onClick={sendMessage} disabled={streaming || !input.trim()}>送出</button>
+      </footer>
+
+      <details className="debug">
+        <summary>除錯紀錄 / Debug logs</summary>
+        <pre>{debug.join('\n')}</pre>
+      </details>
+
+      <style jsx>{`
+        .shell{min-height:100vh;background:#0b1020;color:#eaeefb;display:flex;flex-direction:column}
+        .head{position:sticky;top:0;z-index:10;background:linear-gradient(90deg,#0b1020,#182449);border-bottom:1px solid #22315e;padding:12px 16px;display:flex;justify-content:space-between;align-items:center}
+        .title{font-weight:800}
+        .meta{font-size:12px;opacity:.7}
+        .warn{background:#fff3cd;color:#664d03;padding:8px 16px}
+        .controls{display:grid;grid-template-columns:1fr 1fr auto;gap:8px;padding:12px 16px}
+        .controls span{display:block;font-size:12px;opacity:.8;margin-bottom:4px}
+        select,input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #33406b;background:#111734;color:#eaeefb}
+        .model{grid-column:2/3}
+        .ping{padding:10px 12px;border-radius:10px;border:1px solid #33406b;background:#0e1640;color:#dbe5ff}
+        .msgs{flex:1;padding:8px 16px 96px;display:flex;flex-direction:column;gap:10px}
+        .bubble{max-width:85%;padding:10px 12px;border-radius:14px;line-height:1.5}
+        .bubble.user{align-self:flex-end;background:#2e5cff;color:#fff}
+        .bubble.assistant{align-self:flex-start;background:#1b2447;color:#dbe5ff;border:1px solid #2c3a6b}
+        .composer{position:fixed;left:0;right:0;bottom:0;background:#0b1020;border-top:1px solid #22315e;display:flex;gap:8px;padding:10px 16px}
+        .composer input{flex:1;padding:12px;border-radius:12px;border:1px solid #33406b;background:#111734;color:#eaeefb}
+        .composer button{padding:12px 16px;border-radius:12px;border:1px solid #33406b;background:#2e5cff;color:#fff}
+        .debug{padding:8px 16px 16px;color:#98a7e0}
+        .debug pre{white-space:pre-wrap;word-break:break-word;border:1px solid #22315e;border-radius:10px;padding:8px;max-height:180px;overflow:auto;background:#0f1633}
+        @media (max-width:640px){ .controls{grid-template-columns:1fr;}.model{grid-column:auto} }
+      `}</style>
     </div>
   )
 }
