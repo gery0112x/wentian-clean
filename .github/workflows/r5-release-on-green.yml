@@ -1,0 +1,24 @@
+name: r5-release-on-green
+on:
+  workflow_run:
+    workflows: ["vercel-promote"]
+    types: [completed]
+  workflow_dispatch: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post release tag to /_r5/release
+        env:
+          BASE: https://wentian-clean.vercel.app
+        run: |
+          set -e
+          # 健康門檻
+          test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_models/health)" = "200"
+          test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_r5/health)" = "200"
+          TAG="rel-$(date +%Y%m%d-%H%M)"
+          curl -fsS -X POST "$BASE/_r5/release" \
+            -H 'content-type: application/json' \
+            -d "{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
+          echo "release_tag=$TAG" >> $GITHUB_STEP_SUMMARY
