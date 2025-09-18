@@ -1,0 +1,52 @@
+name: r5-smoke
+on:
+  push:
+    paths:
+      - ".github/workflows/r5-smoke.yml"
+  schedule:
+    - cron: "*/30 * * * *"   # 每30分鐘/可改
+  workflow_dispatch: {}
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      BASE: https://wentian-clean.vercel.app
+    steps:
+      - name: Ping /_models/health
+        id: mhealth
+        run: |
+          set -e
+          code=$(curl -sS -o /tmp/health.json -w "%{http_code}" "$BASE/_models/health")
+          echo "code=$code" >> $GITHUB_OUTPUT
+          echo "body=$(cat /tmp/health.json)" >> $GITHUB_OUTPUT
+          test "$code" = "200"
+      - name: Chat 2+2 via /_models/chat
+        id: chat
+        run: |
+          set -e
+          payload='{"model":"gpt-5-thinking","messages":[{"role":"user","content":"2+2"}]}'
+          code=$(curl -sS -o /tmp/chat.json -w "%{http_code}" -X POST \
+            -H "content-type: application/json" -d "$payload" "$BASE/_models/chat")
+          echo "code=$code" >> $GITHUB_OUTPUT
+          echo "body=$(cat /tmp/chat.json | sed 's/"/\\"/g')" >> $GITHUB_OUTPUT
+          test "$code" = "200"
+      - name: Ping /_r5/health
+        id: r5health
+        run: |
+          set -e
+          code=$(curl -sS -o /tmp/r5.json -w "%{http_code}" "$BASE/_r5/health")
+          echo "code=$code" >> $GITHUB_OUTPUT
+          echo "body=$(cat /tmp/r5.json)" >> $GITHUB_OUTPUT
+          test "$code" = "200"
+      - name: Summary
+        if: always()
+        run: |
+          echo "### R5 Smoke on $BASE" >> $GITHUB_STEP_SUMMARY
+          echo "- /_models/health: ${{ steps.mhealth.outputs.code }}" >> $GITHUB_STEP_SUMMARY
+          echo "- /_models/chat: ${{ steps.chat.outputs.code }}" >> $GITHUB_STEP_SUMMARY
+          echo "- /_r5/health: ${{ steps.r5health.outputs.code }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>/_models/health body</summary><pre>${{ steps.mhealth.outputs.body }}</pre></details>" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>/_models/chat body</summary><pre>${{ steps.chat.outputs.body }}</pre></details>" >> $GITHUB_STEP_SUMMARY
+          echo "<details><summary>/_r5/health body</summary><pre>${{ steps.r5health.outputs.body }}</pre></details>" >> $GITHUB_STEP_SUMMARY
