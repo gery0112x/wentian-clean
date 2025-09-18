@@ -2,7 +2,7 @@ name: r5-takeover
 on:
   push:
     paths:
-      - .github/workflows/r5-takeover.yml   # 一加入就觸發
+      - .github/workflows/r5-takeover.yml   # 一加入或修改就觸發
   workflow_dispatch: {}
 
 permissions:
@@ -10,8 +10,8 @@ permissions:
   pull-requests: write
 
 env:
-  MODELS_BASE: /_models
-  R5_BASE: /_r5
+  NEXT_PUBLIC_MODELS_BASE: /_models
+  NEXT_PUBLIC_R5_BASE: /_r5
 
 jobs:
   takeover:
@@ -19,24 +19,145 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+        with: { fetch-depth: 0 }
 
       - name: Create branch
         run: |
           set -e
           git config user.name "r5-bot"
           git config user.email "r5-bot@users.noreply.github.com"
-          BR=feat/wuji-shell
-          git checkout -B "$BR"
+          git checkout -B feat/wuji-shell
 
-      - name: Add files (ChatGPT-like shell)
+      - name: Add files (Wuji Shell + index)
         shell: bash
         run: |
           mkdir -p components pages
           cat > components/WujiShell.tsx <<'TSX'
-          (把我之前給你的「WujiShell.tsx」內容貼進來；若你要我一次性塞入，我也能提供完整長檔)
+          import React, { useEffect, useMemo, useState } from 'react'
+
+          type Role = 'user'|'assistant'|'system'
+          interface ChatMsg { id:string; role:Role; content:string; ts:number }
+          interface Thread { id:string; title:string; msgs:ChatMsg[]; createdAt:number; updatedAt:number }
+          const MODELS_BASE = process.env.NEXT_PUBLIC_MODELS_BASE || '/_models'
+
+          const uid = () => Math.random().toString(36).slice(2,10)
+
+          export default function WujiShell(){
+            const [threads, setThreads] = useState<Thread[]>([])
+            const [activeId, setActiveId] = useState('')
+            const [input, setInput] = useState('')
+            const [busy, setBusy] = useState(false)
+            const [health, setHealth] = useState<'ok'|'down'|'unknown'>('unknown')
+            const [latency, setLatency] = useState<number|null>(null)
+            const [succ, setSucc] = useState(0)
+            const [fail, setFail] = useState(0)
+
+            useEffect(()=>{ if(!threads.length){ const t:Thread={id:uid(),title:'新的對話',msgs:[],createdAt:Date.now(),updatedAt:Date.now()}; setThreads([t]); setActiveId(t.id) }},[threads.length])
+            const active = useMemo(()=> threads.find(t=>t.id===activeId) || threads[0], [threads, activeId])
+            const msgs = active?.msgs || []
+
+            useEffect(()=>{ (async()=>{ try{ const r=await fetch(`${MODELS_BASE}/health`); setHealth(r.ok?'ok':'down') }catch{ setHealth('down') } })() },[])
+
+            const newThread=()=>{ const t:Thread={id:uid(),title:'新的對話',msgs:[],createdAt:Date.now(),updatedAt:Date.now()}; setThreads(ts=>[t,...ts]); setActiveId(t.id); setInput('') }
+            const removeThread=(id:string)=> setThreads(ts=> ts.filter(t=>t.id!==id))
+
+            async function send(){
+              if(!input.trim() || !active || busy) return
+              const userMsg:ChatMsg={id:uid(),role:'user',content:input.trim(),ts:Date.now()}
+              const next=[...(msgs||[]), userMsg]
+              setBusy(true); setInput('')
+              setThreads(ts=> ts.map(t=> t.id===active.id? {...t,msgs:next,updatedAt:Date.now()}:t))
+              const t0=performance.now()
+              try{
+                const res=await fetch(`${MODELS_BASE}/chat`,{
+                  method:'POST', headers:{'content-type':'application/json'},
+                  body: JSON.stringify({ model:'gpt-5-thinking', messages: next.map(m=>({role:m.role,content:m.content})) })
+                })
+                const t1=performance.now(); setLatency(Math.round(t1-t0))
+                if(!res.ok) throw new Error(`HTTP ${res.status}`)
+                const data=await res.json().catch(()=> ({}))
+                const reply=data?.reply || data?.choices?.[0]?.message?.content || data?.content || JSON.stringify(data)
+                const asst:ChatMsg={id:uid(),role:'assistant',content:String(reply??''),ts:Date.now()}
+                setThreads(ts=> ts.map(t=> t.id===active.id? {...t,msgs:[...t.msgs,asst],updatedAt:Date.now()}:t))
+                setSucc(s=>s+1)
+              }catch(e:any){
+                const err:ChatMsg={id:uid(),role:'assistant',content:`【錯誤】/chat 連線失敗：${e?.message||e}`,ts:Date.now()}
+                setThreads(ts=> ts.map(t=> t.id===active.id? {...t,msgs:[...t.msgs,err],updatedAt:Date.now()}:t))
+                setFail(f=>f+1)
+              }finally{ setBusy(false) }
+            }
+
+            return (
+              <div className="min-h-screen bg-[#0A0A0B] text-slate-100">
+                <div className="flex h-screen">
+                  <aside className="hidden md:flex w-72 shrink-0 flex-col border-r border-white/10 bg-black/30 backdrop-blur">
+                    <div className="p-3">
+                      <button onClick={newThread} className="w-full rounded-lg bg-white/10 hover:bg-white/20 px-3 py-2 text-left">＋ 新對話</button>
+                    </div>
+                    <div className="flex-1 overflow-y-auto px-2 pb-4 space-y-1">
+                      {threads.map(t=>(
+                        <button key={t.id} onClick={()=>setActiveId(t.id)}
+                          className={`w-full px-3 py-2 rounded-lg text-left hover:bg-white/10 ${t.id===active?.id?'bg-white/10':''}`}>
+                          <div className="text-sm truncate">{t.title}</div>
+                          <div className="text-[10px] opacity-50">{new Date(t.updatedAt).toLocaleTimeString()}</div>
+                          <span onClick={(e)=>{e.stopPropagation();removeThread(t.id)}} className="text-[11px] opacity-60 hover:opacity-100">刪除</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="p-3 text-[11px] opacity-60 border-t border-white/10">
+                      健康：<span className={health==='ok'?'text-emerald-400':'text-rose-400'}>{health}</span> · 只打 <code>/_models</code>
+                    </div>
+                  </aside>
+
+                  <main className="flex-1 flex flex-col">
+                    <div className="h-12 border-b border-white/10 bg-black/30 backdrop-blur flex items-center justify-between px-3">
+                      <div className="text-sm">無極入口 · Chat 殼</div>
+                      <div className="text-[11px] opacity-60">延遲：{latency??'—'}ms · 成功率：{(succ+fail)?Math.round((succ/(succ+fail))*100):100}%</div>
+                    </div>
+                    <div className="flex-1 overflow-y-auto">
+                      <div className="max-w-3xl mx-auto px-3 py-4 space-y-4">
+                        {!msgs.length && (
+                          <div className="grid md:grid-cols-2 gap-3">
+                            {['摘要會議重點','解釋下面 SQL','產一份 OpenAPI 3 範例','把中文改寫成正式英文'].map((t,i)=>(
+                              <button key={i} onClick={()=>setInput(t)}
+                                className="rounded-xl border border-white/10 bg-[#0E1117] p-4 text-left hover:border-white/20">
+                                <div className="text-sm font-medium">{t}</div>
+                                <div className="text-xs opacity-60 mt-1">點我填入輸入框</div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        {msgs.map(m=>(
+                          <div key={m.id} className={`rounded-2xl border ${m.role==='assistant'?'bg-[#0E1117] border-white/10':'border-transparent'}`}>
+                            <div className="p-4 whitespace-pre-wrap break-words text-[15px] leading-7">{m.content}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="border-t border-white/10 bg-black/30 backdrop-blur">
+                      <div className="max-w-3xl mx-auto px-3 py-2">
+                        <div className="rounded-xl border border-white/10 bg-[#0D0F14] p-2">
+                          <textarea value={input} onChange={e=>setInput(e.target.value)}
+                            placeholder="傳訊息…（Shift+Enter 換行）"
+                            className="w-full bg-transparent outline-none resize-none min-h-[52px] text-[15px]"
+                            onKeyDown={(e)=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); send() } }} />
+                          <div className="flex items-center justify-between text-[11px] opacity-60">
+                            <div>請求將送往 <code>{MODELS_BASE}/chat</code></div>
+                            <div className="flex gap-2">
+                              <button onClick={()=>setInput('')} className="px-2 py-1 rounded border border-white/15 hover:bg-white/10">清空</button>
+                              <button onClick={send} disabled={busy || !input.trim()} className="px-3 py-1 rounded bg-white text-black disabled:opacity-40">送出</button>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </main>
+                </div>
+              </div>
+            )
+          }
           TSX
+
           cat > pages/index.tsx <<'TSX'
           import dynamic from 'next/dynamic'
           const WujiShell = dynamic(() => import('../components/WujiShell'), { ssr: false })
@@ -46,11 +167,14 @@ jobs:
             return (
               <>
                 <WujiShell />
-                <script dangerouslySetInnerHTML={{__html:`(function(){try{localStorage.setItem('wuji.basePath','${MODELS_BASE}');localStorage.setItem('wuji.r5','${R5_BASE}')}catch(e){}})()`}} />
+                <script dangerouslySetInnerHTML={{__html:
+                  `(function(){try{localStorage.setItem('wuji.basePath','${MODELS_BASE}');
+                  localStorage.setItem('wuji.r5','${R5_BASE}')}catch(e){}})()`}} />
               </>
             )
           }
           TSX
+
           cat > .env.local.example <<'ENV'
           NEXT_PUBLIC_MODELS_BASE=/_models
           NEXT_PUBLIC_R5_BASE=/_r5
@@ -74,12 +198,3 @@ jobs:
             - 無供應商直連，無新增敏感金鑰
           draft: false
           base: main
-
-      - name: Call /_r5/release (best-effort)
-        continue-on-error: true
-        run: |
-          TAG="rel-$(date +%Y%m%d-%H%M)"
-          curl -fsS -X POST "${{ env.R5_BASE }}/release" \
-            -H 'content-type: application/json' \
-            -d "{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"r5-bot\"}}" || true
-          echo "release_tag=$TAG" >> $GITHUB_OUTPUT
