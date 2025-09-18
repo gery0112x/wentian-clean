@@ -1,0 +1,21 @@
+name: r5-rollback
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release_tag to rollback (e.g. rel-20250918-1416)"
+        required: true
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call /_r5/rollback
+        env:
+          BASE: https://wentian-clean.vercel.app
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -e
+          curl -fsS -X POST "$BASE/_r5/rollback" \
+            -H 'content-type: application/json' \
+            -d "{\"release_tag\":\"$TAG\"}"
+          echo "rolled_back=$TAG" >> $GITHUB_STEP_SUMMARY
