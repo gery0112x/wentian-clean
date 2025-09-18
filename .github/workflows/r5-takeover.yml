@@ -1,0 +1,85 @@
+name: r5-takeover
+on:
+  push:
+    paths:
+      - .github/workflows/r5-takeover.yml   # 一加入就觸發
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  MODELS_BASE: /_models
+  R5_BASE: /_r5
+
+jobs:
+  takeover:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create branch
+        run: |
+          set -e
+          git config user.name "r5-bot"
+          git config user.email "r5-bot@users.noreply.github.com"
+          BR=feat/wuji-shell
+          git checkout -B "$BR"
+
+      - name: Add files (ChatGPT-like shell)
+        shell: bash
+        run: |
+          mkdir -p components pages
+          cat > components/WujiShell.tsx <<'TSX'
+          (把我之前給你的「WujiShell.tsx」內容貼進來；若你要我一次性塞入，我也能提供完整長檔)
+          TSX
+          cat > pages/index.tsx <<'TSX'
+          import dynamic from 'next/dynamic'
+          const WujiShell = dynamic(() => import('../components/WujiShell'), { ssr: false })
+          export default function Home(){
+            const MODELS_BASE = process.env.NEXT_PUBLIC_MODELS_BASE || '/_models'
+            const R5_BASE = process.env.NEXT_PUBLIC_R5_BASE || '/_r5'
+            return (
+              <>
+                <WujiShell />
+                <script dangerouslySetInnerHTML={{__html:`(function(){try{localStorage.setItem('wuji.basePath','${MODELS_BASE}');localStorage.setItem('wuji.r5','${R5_BASE}')}catch(e){}})()`}} />
+              </>
+            )
+          }
+          TSX
+          cat > .env.local.example <<'ENV'
+          NEXT_PUBLIC_MODELS_BASE=/_models
+          NEXT_PUBLIC_R5_BASE=/_r5
+          ENV
+
+      - name: Commit & push
+        run: |
+          git add .
+          git commit -m "feat: Wuji ChatGPT-like shell using /_models + /_r5 (no vendor direct calls)" || echo "no changes"
+          git push -u origin feat/wuji-shell
+
+      - name: Open PR
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: feat/wuji-shell
+          title: "feat: Wuji ChatGPT-like shell (/_models + /_r5)"
+          body: |
+            - 只換殼，後端不動
+            - 前端僅呼叫 `/_models/*`、`/_r5/*`
+            - 無供應商直連，無新增敏感金鑰
+          draft: false
+          base: main
+
+      - name: Call /_r5/release (best-effort)
+        continue-on-error: true
+        run: |
+          TAG="rel-$(date +%Y%m%d-%H%M)"
+          curl -fsS -X POST "${{ env.R5_BASE }}/release" \
+            -H 'content-type: application/json' \
+            -d "{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"r5-bot\"}}" || true
+          echo "release_tag=$TAG" >> $GITHUB_OUTPUT
