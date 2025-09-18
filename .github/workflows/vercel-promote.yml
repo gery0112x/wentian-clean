@@ -1,76 +1,24 @@
-name: Vercel Promote / Rollback
-
+name: vercel-promote
 on:
-  workflow_dispatch:
-    inputs:
-      target:
-        description: "目標：Vercel 部署 URL（*.vercel.app）或 commit SHA（前7碼以上）"
-        required: true
-      environment:
-        description: "要切到哪個環境（固定 production）"
-        default: "production"
-        required: true
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: ["r5-auto-merge"]
+    types: [completed]
 
 jobs:
   promote:
     runs-on: ubuntu-latest
-    env:
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Install Vercel CLI
-        run: npm i -g vercel@latest jq
-
-      - name: Prepare Vercel config (production)
-        run: vercel pull --yes --environment=production --token "$VERCEL_TOKEN"
-
-      - name: Resolve target deployment URL
-        id: resolve
-        shell: bash
+      - name: Promote latest READY preview
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
-          TARGET="${{ github.event.inputs.target }}"
-
-          # 若直接給 URL，原樣使用
-          if [[ "$TARGET" == *".vercel.app"* ]]; then
-            echo "url=$TARGET" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          # 否則視為 commit SHA，從列表找對應部署
-          echo "Resolving by commit sha: $TARGET"
-          # 取最近 200 筆 production 部署，找 meta.githubCommitSha 前綴符合者
-          vercel list --prod --token "$VERCEL_TOKEN" --json > list.json
-          URL=$(cat list.json | jq -r --arg sha "$TARGET" '
-            ( .deployments // . )                         # 新舊 CLI 兼容
-            | map(select((.meta.githubCommitSha // .meta.commitSha // "")|startswith($sha)))
-            | .[0].url // empty
-          ')
-          if [ -z "$URL" ]; then
-            echo "找不到對應部署（sha=$TARGET）"
-            exit 1
-          fi
-          echo "url=https://$URL" >> $GITHUB_OUTPUT
-          echo "Resolved URL: https://$URL"
-
-      - name: Promote to production
-        run: |
-          URL="${{ steps.resolve.outputs.url }}"
-          echo "Promoting: $URL"
-          npx vercel promote "$URL" --token "$VERCEL_TOKEN" --yes
-          echo "✅ Done: $URL"
-
-      - name: Health check after promote
-        run: |
-          BASE="https://wentian-clean.vercel.app"
           set -e
-          curl -fsS "$BASE/api/wuji-check" | sed -e 's/.*/HEALTH: &/'
-          curl -fsS -o /dev/null -w "HOME %{{http_code}}\n" "$BASE/home"
+          LATEST=$(curl -fsSL "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&state=READY&limit=1" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" | jq -r '.deployments[0].uid')
+          test "$LATEST" != "null" -a -n "$LATEST"
+          curl -fsSL -X POST "https://api.vercel.com/v13/deployments/${LATEST}/promote?force=true" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" -d "{}"
+          echo "promoted=$LATEST" >> $GITHUB_STEP_SUMMARY
