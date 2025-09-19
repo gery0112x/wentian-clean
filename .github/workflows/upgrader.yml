@@ -1,13 +1,29 @@
 name: upgrader
+
 on:
   workflow_dispatch:
     inputs:
-      jobType:    { required: true,  default: fuceti_init }
-      plan:       { required: false, default: "{}" }
-      jobId:      { required: true }
-      notifyURL:  { required: true }
-      notifyToken:{ required: true }
-      branch:     { required: true,  default: main }
+      jobType:
+        description: "Job type"
+        required: true
+        default: "fuceti_init"
+      plan:
+        description: "Plan JSON"
+        required: false
+        default: "{}"
+      jobId:
+        description: "Job ID"
+        required: true
+      notifyURL:
+        description: "Notify URL"
+        required: true
+      notifyToken:
+        description: "Notify Token"
+        required: true
+      branch:
+        description: "Target branch"
+        required: true
+        default: "main"
 
 jobs:
   apply:
@@ -16,7 +32,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show inputs
+      - name: Echo inputs
         run: |
           echo "jobType=${{ inputs.jobType }}"
           echo "plan=${{ inputs.plan }}"
