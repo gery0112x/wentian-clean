@@ -32,7 +32,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Echo inputs
+      - name: Echo inputs (smoke)
         run: |
           echo "jobType=${{ inputs.jobType }}"
           echo "plan=${{ inputs.plan }}"
