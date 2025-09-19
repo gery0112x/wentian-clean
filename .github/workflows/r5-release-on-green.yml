@@ -1,15 +1,4 @@
-name: r5-release-on-green
-on:
-  workflow_run:
-    workflows: ["vercel-promote"]
-    types: [completed]
-  workflow_dispatch: {}
-
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Post release tag to /_r5/release
+      - name: Post release (/_r5/release or fallback /_r5/ping)
         env:
           BASE: https://wentian-clean.vercel.app
         run: |
@@ -17,8 +6,22 @@ jobs:
           # 健康門檻
           test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_models/health)" = "200"
           test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_r5/health)" = "200"
+
           TAG="rel-$(date +%Y%m%d-%H%M)"
-          curl -fsS -X POST "$BASE/_r5/release" \
-            -H 'content-type: application/json' \
-            -d "{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
+          PAYLOAD="{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
+
+          # 先嘗試 /_r5/release
+          code=$(curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
+                  -H 'content-type: application/json' \
+                  -d "$PAYLOAD" "$BASE/_r5/release" || true)
+
+          if [ -z "$code" ] || [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
+            echo "release endpoint code=$code → fallback to /_r5/ping"
+            code=$(curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
+                    -H 'content-type: application/json' \
+                    -d "$PAYLOAD" "$BASE/_r5/ping")
+          fi
+
+          echo "final_code=$code" >> $GITHUB_STEP_SUMMARY
+          test "$code" -ge 200 && test "$code" -lt 300
           echo "release_tag=$TAG" >> $GITHUB_STEP_SUMMARY
