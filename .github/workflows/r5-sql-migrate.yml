@@ -1,23 +1,56 @@
 name: r5-sql-migrate
+
 on:
   workflow_dispatch:
     inputs:
       path:
-        description: 'SQL file path (in repo)'
+        description: Relative path to the SQL file (e.g. supabase/migrations/20250915_gov_coldstore.sql)
         required: true
-        default: 'supabase/migrations/20250915_gov_coldstore.sql'
+        type: string
+      schema:
+        description: Optional schema name (default public)
+        required: false
+        type: string
+        default: public
 
 jobs:
   migrate:
     runs-on: ubuntu-latest
+    env:
+      SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-      - name: Run SQL
-        env:
-          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-          FILE: ${{ github.event.inputs.path }}
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify secret
         run: |
-          echo "Running $FILE against Supabase…"
-          psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$FILE"
+          if [ -z "$SUPABASE_DB_URL" ]; then
+            echo "❌ Missing repository secret: SUPABASE_DB_URL"
+            exit 1
+          fi
+
+      - name: Verify SQL file exists
+        run: |
+          FILE="${{ github.event.inputs.path }}"
+          if [ ! -f "$FILE" ]; then
+            echo "❌ SQL file not found: $FILE"
+            exit 1
+          fi
+          echo "Found SQL: $FILE"
+
+      - name: Install psql client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      - name: Run SQL
+        run: |
+          set -euo pipefail
+          psql "$SUPABASE_DB_URL" \
+            --set ON_ERROR_STOP=1 \
+            -v schema="${{ github.event.inputs.schema }}" \
+            -f "${{ github.event.inputs.path }}"
+
+      - name: Summary
+        run: |
+          echo "✅ Applied: ${{ github.event.inputs.path }}" >> $GITHUB_STEP_SUMMARY
