@@ -9,28 +9,32 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Health gates
+        run: |
+          set -e
+          ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" https://wentian-clean.vercel.app/_models/health
+          ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" https://wentian-clean.vercel.app/_r5/health
+
       - name: Post release (/_r5/release or fallback /_r5/ping)
         env:
           BASE: https://wentian-clean.vercel.app
         run: |
           set -e
-          # 健康門檻
-          test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_models/health)" = "200"
-          test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_r5/health)" = "200"
-
           TAG="rel-$(date +%Y%m%d-%H%M)"
           PAYLOAD="{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
 
-          # 先試 /_r5/release
-          code=$(curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
+          # 先試 /_r5/release（重試）
+          code=$(./scripts/ci-retry.sh 3 2 curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
                 -H 'content-type: application/json' -d "$PAYLOAD" "$BASE/_r5/release" || true)
 
-          # 405/失敗 → fallback /_r5/ping（該端點允許 POST）
-          if [ -z "$code" ] || [ "$code" -lt 200 ] || [ "$code" -ge 300 ]; then
-            code=$(curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
+          # 不為 2xx → fallback /_r5/ping（重試）
+          if ! [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
+            code=$(./scripts/ci-retry.sh 5 2 curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
                   -H 'content-type: application/json' -d "$PAYLOAD" "$BASE/_r5/ping")
           fi
 
           echo "final_code=$code" >> $GITHUB_STEP_SUMMARY
           echo "release_tag=$TAG" >> $GITHUB_STEP_SUMMARY
-          test "$code" -ge 200 -a "$code" -lt 300
+          [[ "$code" =~ ^2[0-9][0-9]$ ]]
