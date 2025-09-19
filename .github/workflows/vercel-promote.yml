@@ -2,19 +2,10 @@ name: vercel-promote
 
 on:
   workflow_dispatch:
-    inputs:
-      deploymentId:
-        description: "Optional: deploymentId to promote; leave empty to auto-pick latest READY preview"
-        required: false
-        default: ""
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
-      - "app/**"
-      - "pages/**"
-      - "public/**"
-      - "next.config.mjs"
-      - "package.json"
+      - ".github/workflows/vercel-promote.yml"
 
 jobs:
   promote:
@@ -23,46 +14,52 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Guard secrets
+      - name: Sanity check secrets
         run: |
-          test -n "$VERCEL_TOKEN" || (echo "VERCEL_TOKEN missing" && exit 1)
-          test -n "$VERCEL_PROJECT_ID" || (echo "VERCEL_PROJECT_ID missing" && exit 1)
-          test -n "$VERCEL_ORG_ID" || (echo "VERCEL_ORG_ID missing" && exit 1)
+          test -n "$VERCEL_TOKEN" || { echo "::error::VERCEL_TOKEN missing"; exit 1; }
+          test -n "$VERCEL_PROJECT_ID" || { echo "::error::VERCEL_PROJECT_ID missing"; exit 1; }
+          echo "Org: ${VERCEL_ORG_ID:-<none>}"
 
-      - name: Resolve deploymentId (latest READY preview if empty)
-        id: resolve
+      - name: Find latest READY preview
+        id: find
+        shell: bash
         run: |
-          set -e
-          if [ -n "${{ github.event.inputs.deploymentId }}" ]; then
-            echo "id=${{ github.event.inputs.deploymentId }}" >> $GITHUB_OUTPUT
-            exit 0
+          set -euo pipefail
+          headers=(-H "Authorization: Bearer $VERCEL_TOKEN")
+          if [[ -n "${VERCEL_ORG_ID:-}" ]]; then
+            headers+=(-H "x-vercel-team-id: $VERCEL_ORG_ID")
           fi
-          # 盡量靠 API v13；取最新 READY 的 preview
-          url="https://api.vercel.com/v13/deployments?projectId=$VERCEL_PROJECT_ID&state=READY&target=preview&limit=1"
-          json=$(curl -fsS -H "Authorization: Bearer $VERCEL_TOKEN" -H "x-vercel-team-id: $VERCEL_ORG_ID" "$url")
-          id=$(echo "$json" | sed -n 's/.*"id":"\([a-z0-9]*\)".*/\1/p' | head -n1)
-          if [ -z "$id" ]; then
-            echo "Cannot resolve READY preview deployment" >&2
-            exit 1
-          fi
-          echo "id=$id" >> $GITHUB_OUTPUT
-          echo "resolved_deployment_id=$id" >> $GITHUB_STEP_SUMMARY
 
-      - name: Promote to Production (with retry)
+          url="https://api.vercel.com/v6/deployments?projectId=${VERCEL_PROJECT_ID}&state=READY&target=preview&limit=1"
+          echo "GET $url"
+          json="$(curl -fsSL "${headers[@]}" "$url")" || {
+            echo "::group::Response"; curl -sSL -D- "${headers[@]}" "$url" -o /dev/null; echo "::endgroup::"; exit 1;
+          }
+
+          id="$(echo "$json" | jq -r '.deployments[0].uid // empty')"
+          created_at="$(echo "$json" | jq -r '.deployments[0].created // empty')"
+          if [[ -z "$id" ]]; then
+            echo "::error::No READY preview deployment found"; exit 1;
+          fi
+          echo "deployment_id=$id" >> "$GITHUB_OUTPUT"
+          echo "created_at=$created_at" >> "$GITHUB_OUTPUT"
+          echo "Preview deployment: $id ($created_at)"
+
+      - name: Promote to production
+        shell: bash
         run: |
-          set -e
-          id="${{ steps.resolve.outputs.id }}"
-          code=$(curl -sS -o /tmp/promote.json -w "%{http_code}" -X POST \
-            -H "Authorization: Bearer $VERCEL_TOKEN" \
-            -H "x-vercel-team-id: $VERCEL_ORG_ID" \
-            -H "x-vercel-project-id: $VERCEL_PROJECT_ID" \
-            -H "Content-Type: application/json" \
-            "https://api.vercel.com/v13/deployments/$id/promote" \
-            -d '{"target":"production"}')
-          echo "HTTP=$code" >> $GITHUB_STEP_SUMMARY
-          cat /tmp/promote.json >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          [[ "$code" =~ ^20(0|1|4)$ ]]
+          set -euo pipefail
+          id="${{ steps.find.outputs.deployment_id }}"
+          headers=(-H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json")
+          if [[ -n "${VERCEL_ORG_ID:-}" ]]; then
+            headers+=(-H "x-vercel-team-id: $VERCEL_ORG_ID")
+          fi
+          url="https://api.vercel.com/v13/deployments/${id}/promote"
+          echo "POST $url"
+          curl -fsS -X POST "$url" "${headers[@]}" --data '{"target":"production"}' | jq -r '{jobId,status,alias}'
+          echo "Promote request sent."
