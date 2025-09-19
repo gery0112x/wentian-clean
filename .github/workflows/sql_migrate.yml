@@ -1,0 +1,26 @@
+name: SQL Migrate
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: 'Path to SQL file'
+        required: true
+        type: string
+
+jobs:
+  run-sql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Execute SQL
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}   # 只要這一個 Secret
+        run: |
+          echo "Executing ${{ inputs.path }}"
+          test -f "${{ inputs.path }}" || (echo "File not found"; exit 1)
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "${{ inputs.path }}"
