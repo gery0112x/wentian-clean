@@ -1,0 +1,155 @@
+name: r5-workflow-doctor
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [ "main" ]
+    paths-ignore:
+      - "**.md"
+      - "**/*.png"
+      - "**/*.jpg"
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    runs-on: ubuntu-latest
+    env:
+      BASE: https://wentian-clean.vercel.app
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install actionlint & yamllint
+        run: |
+          set -e
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+            | bash -s -- -b /usr/local/bin v1.6.27
+          actionlint --version
+          pip install --quiet yamllint
+
+      - name: Lint workflows (actionlint)
+        id: lint1
+        continue-on-error: true
+        run: |
+          set -e
+          actionlint -color
+
+      - name: Lint workflows (yamllint)
+        id: lint2
+        continue-on-error: true
+        run: |
+          yamllint -d "{extends: default, rules: {line-length: disable}}" .github/workflows
+
+      - name: Check steps dash (-) quickly
+        id: stepsdash
+        continue-on-error: true
+        run: |
+          fail=0
+          for f in .github/workflows/*.yml; do
+            echo "-- $f"
+            awk '
+              $0 ~ /^steps:/ {insteps=1; next}
+              insteps && $0 ~ /^[[:space:]]*-[[:space:]]/ {insteps=0; ok=1}
+              END { if (insteps==1) { print "WARN: steps without item dash (-)"; exit 1 } }
+            ' "$f" || fail=1
+          done
+          exit $fail
+
+      - name: Verify env secrets presence
+        id: envs
+        run: |
+          miss=0
+          for k in VERCEL_TOKEN VERCEL_PROJECT_ID VERCEL_ORG_ID; do
+            v=${!k:-}
+            if [ -z "$v" ]; then echo "::error::$k missing"; miss=1; else echo "$k=SET"; fi
+          done
+          if [ $miss -eq 1 ]; then echo "env_ok=0" >> $GITHUB_OUTPUT; exit 0; fi
+          echo "env_ok=1" >> $GITHUB_OUTPUT
+
+      - name: Vercel token / team / project reachability
+        id: vercel
+        if: steps.envs.outputs.env_ok == '1'
+        continue-on-error: true
+        run: |
+          set -e
+          echo "Check /v2/user"
+          u=$(curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" https://api.vercel.com/v2/user -w "\nHTTP=%{http_code}\n")
+          echo "$u"
+          echo "Check project (must 200)"
+          p=$(curl -sS -H "Authorization: Bearer $VERCEL_TOKEN" \
+                  -H "x-vercel-team-id: $VERCEL_ORG_ID" \
+                  https://api.vercel.com/v9/projects/$VERCEL_PROJECT_ID -w "\nHTTP=%{http_code}\n")
+          echo "$p"
+
+      - name: Endpoints health
+        id: health
+        continue-on-error: true
+        run: |
+          set -e
+          mh=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/_models/health" || true)
+          rh=$(curl -sS -o /dev/null -w "%{http_code}" "$BASE/_r5/health" || true)
+          echo "models_health=$mh" >> $GITHUB_OUTPUT
+          echo "r5_health=$rh" >> $GITHUB_OUTPUT
+          echo "models_health: $mh" >> $GITHUB_STEP_SUMMARY
+          echo "r5_health: $rh" >> $GITHUB_STEP_SUMMARY
+
+      - name: Check next.config.mjs rewrites
+        id: rewrites
+        continue-on-error: true
+        run: |
+          if [ -f next.config.mjs ]; then
+            grep -E "/_models|/_r5" -n next.config.mjs || (echo "No rewrite hints" && exit 1)
+          else
+            echo "next.config.mjs not found"; exit 1
+          fi
+
+      - name: Diagnosis summary
+        run: |
+          echo "## R5 Doctor Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Workflows" >> $GITHUB_STEP_SUMMARY
+          echo "- actionlint: ${{ steps.lint1.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- yamllint: ${{ steps.lint2.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- steps-dash: ${{ steps.stepsdash.outcome }}" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Env & Vercel" >> $GITHUB_STEP_SUMMARY
+          echo "- env_ok: ${{ steps.envs.outputs.env_ok || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- team/project reachability: ${{ steps.vercel.outcome }}" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Health" >> $GITHUB_STEP_SUMMARY
+          echo "- /_models/health: ${{ steps.health.outputs.models_health }}" >> $GITHUB_STEP_SUMMARY
+          echo "- /_r5/health: ${{ steps.health.outputs.r5_health }}" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Rewrites" >> $GITHUB_STEP_SUMMARY
+          echo "- next.config.mjs: ${{ steps.rewrites.outcome }}" >> $GITHUB_STEP_SUMMARY
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Verdict" >> $GITHUB_STEP_SUMMARY
+          ok=1
+          # workflows 綠
+          [ "${{ steps.lint1.outcome }}" = "success" ] || ok=0
+          [ "${{ steps.lint2.outcome }}" = "success" ] || ok=0
+          [ "${{ steps.stepsdash.outcome }}" = "success" ] || ok=0
+          # env 存在
+          [ "${{ steps.envs.outputs.env_ok || '0' }}" = "1" ] || ok=0
+          # health 200
+          [ "${{ steps.health.outputs.models_health }}" = "200" ] || ok=0
+          [ "${{ steps.health.outputs.r5_health }}" = "200" ] || ok=0
+          # rewrite 有線索
+          [ "${{ steps.rewrites.outcome }}" = "success" ] || ok=0
+
+          if [ $ok -eq 1 ]; then
+            echo "✅ READY: 可以進入 promote → release 流程" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ NOT READY: 請依上面紅燈逐條處理（doctor 會在每次 push 自動再跑）" >> $GITHUB_STEP_SUMMARY
+          fi
