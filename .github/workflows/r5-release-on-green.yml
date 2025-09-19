@@ -1,9 +1,10 @@
 name: r5-release-on-green
+
 on:
+  workflow_dispatch: {}
   workflow_run:
     workflows: ["vercel-promote"]
     types: [completed]
-  workflow_dispatch: {}
 
 jobs:
   release:
@@ -13,18 +14,19 @@ jobs:
 
       - name: Install retry helper
         run: |
+          mkdir -p scripts
           cat > scripts/ci-retry.sh <<'BASH'
           #!/usr/bin/env bash
           set -euo pipefail
           max=${1:-5}; shift || true
           sleepsec=${1:-2}; shift || true
-          try=0; code=""
+          try=0
           while :; do
             set +e
             out=$("$@"); rc=$?
             set -e
             code="$out"
-            if [ $rc -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$|^201$ ]]; then
+            if [ $rc -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
               echo "$code"; exit 0
             fi
             try=$((try+1))
@@ -38,19 +40,24 @@ jobs:
           BASH
           chmod +x scripts/ci-retry.sh
 
+      # 健康門檻
       - name: Health gates
         run: |
           set -e
-          ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" https://wentian-clean.vercel.app/_models/health
-          ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" https://wentian-clean.vercel.app/_r5/health
+          BASE="https://wentian-clean.vercel.app"
+          ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" "$BASE/_models/health"
+          ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" "$BASE/_r5/health"
+          echo "models_health=OK" >> $GITHUB_STEP_SUMMARY
+          echo "r5_health=OK" >> $GITHUB_STEP_SUMMARY
 
-      - name: Post release (/_r5/release → fallback /_r5/ping)
+      # 發版記錄：先嘗試 /_r5/release，若 405 或非 2xx 改打 /_r5/ping
+      - name: Record release (/_r5/release → fallback /_r5/ping)
         env:
           BASE: https://wentian-clean.vercel.app
         run: |
           set -e
           TAG="rel-$(date +%Y%m%d-%H%M)"
-          PAYLOAD="{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
+          PAYLOAD="{\"baseline_tag\":\"base-$(date +%Y%m%d)-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
 
           code=$(./scripts/ci-retry.sh 3 2 curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
                 -H 'content-type: application/json' -d "$PAYLOAD" "$BASE/_r5/release" || true)
