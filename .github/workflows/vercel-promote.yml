@@ -1,7 +1,6 @@
 name: vercel-promote
 on:
-  push:
-    branches: [main]
+  workflow_dispatch: {}
   workflow_run:
     workflows: ["r5-auto-merge"]
     types: [completed]
@@ -9,16 +8,27 @@ on:
 jobs:
   promote:
     runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN:   ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID:  ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
     steps:
       - name: Promote latest READY preview
-        env:
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
         run: |
           set -e
-          LATEST=$(curl -fsSL "https://api.vercel.com/v6/deployments?projectId=$VERCEL_PROJECT_ID&state=READY&limit=1" \
-            -H "Authorization: Bearer $VERCEL_TOKEN" | jq -r '.deployments[0].uid')
-          test "$LATEST" != "null" -a -n "$LATEST"
-          curl -fsSL -X POST "https://api.vercel.com/v13/deployments/${LATEST}/promote?force=true" \
-            -H "Authorization: Bearer $VERCEL_TOKEN" -H "Content-Type: application/json" -d "{}"
-          echo "promoted=$LATEST" >> $GITHUB_STEP_SUMMARY
+          # 取最新 READY 的 preview
+          DEPLOY_ID=$(curl -fsS \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "x-vercel-team-id: $VERCEL_ORG_ID" \
+            "https://api.vercel.com/v13/deployments?projectId=$VERCEL_PROJECT_ID&state=READY&target=preview&limit=1" \
+            | jq -r '.deployments[0].uid')
+          test -n "$DEPLOY_ID"
+
+          # Promote -> production
+          code=$(curl -sS -o /tmp/promote.json -w "%{http_code}" -X POST \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "x-vercel-team-id: $VERCEL_ORG_ID" \
+            "https://api.vercel.com/v13/deployments/$DEPLOY_ID/promote?target=production")
+
+          echo "HTTP=$code"; cat /tmp/promote.json || true
+          test "$code" = "200" -o "$code" = "201"
