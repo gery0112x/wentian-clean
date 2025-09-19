@@ -1,104 +1,24 @@
-name: Wuji Upgrader
+name: upgrader
 on:
   workflow_dispatch:
     inputs:
-      jobType: { required: true, default: fuceti_init }
-      plan:   { required: false, default: "{}" }
-      jobId:  { required: true }
-      notifyURL:   { required: true }
-      notifyToken: { required: true }
-      branch: { required: true, default: main }
+      jobType:    { required: true,  default: fuceti_init }
+      plan:       { required: false, default: "{}" }
+      jobId:      { required: true }
+      notifyURL:  { required: true }
+      notifyToken:{ required: true }
+      branch:     { required: true,  default: main }
 
 jobs:
   apply:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with: { ref: ${{ inputs.branch }} }
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # ---- 富策體 ----
-      - name: Create Fuceti
-        if: ${{ inputs.jobType == 'fuceti_init' }}
+      - name: Show inputs
         run: |
-          mkdir -p app/fuceti
-          cat > app/fuceti/page.tsx <<'EOF'
-          export default function FucetiPage(){
-            return (<div className="p-6">
-              <h1 className="text-xl font-semibold">富策體（最小可用）</h1>
-              <p className="opacity-80 mt-2">自動升級完成。後續會接策略卡/倉位/風險。</p>
-            </div>)
-          }
-          EOF
-
-      # ---- 監察 ----
-      - name: Create Monitor
-        if: ${{ inputs.jobType == 'monitor_init' }}
-        run: |
-          mkdir -p app/monitor
-          cat > app/monitor/page.tsx <<'EOF'
-          export default function MonitorPage(){
-            return (<div className="p-6">
-              <h1 className="text-xl font-semibold">監察（最小可用）</h1>
-              <p className="opacity-80 mt-2">之後接延遲/錯誤率/成本的小儀錶。</p>
-            </div>)
-          }
-          EOF
-
-      # ---- 日記 ----
-      - name: Create Journal
-        if: ${{ inputs.jobType == 'journal_init' }}
-        run: |
-          mkdir -p app/journal
-          cat > app/journal/page.tsx <<'EOF'
-          export default function JournalPage(){
-            return (<div className="p-6">
-              <h1 className="text-xl font-semibold">日記（最小可用）</h1>
-              <p className="opacity-80 mt-2">每日一頁，18:00 摘要（之後接 Cron）。</p>
-            </div>)
-          }
-          EOF
-
-      # ---- 出版資訊 ----
-      - name: Create Publish
-        if: ${{ inputs.jobType == 'publish_init' }}
-        run: |
-          mkdir -p app/publish
-          cat > app/publish/page.tsx <<'EOF'
-          export default function PublishPage(){
-            return (<div className="p-6">
-              <h1 className="text-xl font-semibold">出版資訊（最小可用）</h1>
-              <p className="opacity-80 mt-2">選題卡/目錄/稿件元資料（後續接）。</p>
-            </div>)
-          }
-          EOF
-
-      # ---- 版本資訊 ----
-      - name: Create Changelog
-        if: ${{ inputs.jobType == 'changelog_init' }}
-        run: |
-          mkdir -p app/changelog
-          cat > app/changelog/page.tsx <<'EOF'
-          export default function ChangelogPage(){
-            return (<div className="p-6">
-              <h1 className="text-xl font-semibold">版本資訊（最小可用）</h1>
-              <p className="opacity-80 mt-2">讀取 CHANGELOG.md（之後接）。</p>
-            </div>)
-          }
-          EOF
-
-      - name: Commit & Push
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --quiet && echo "No changes" || git commit -m "chore(upgrade): ${{ inputs.jobType }}"
-          git push origin HEAD:${{ inputs.branch }}
-
-      - name: Notify platform done
-        run: |
-          curl -s -X POST "${{ inputs.notifyURL }}" \
-           -H "Authorization: Bearer ${{ inputs.notifyToken }}" \
-           -H "Content-Type: application/json" \
-           -d "{\"jobId\":\"${{ inputs.jobId }}\",\"status\":\"done\",\"progress\":100}"
+          echo "jobType=${{ inputs.jobType }}"
+          echo "plan=${{ inputs.plan }}"
+          echo "jobId=${{ inputs.jobId }}"
+          echo "branch=${{ inputs.branch }}"
