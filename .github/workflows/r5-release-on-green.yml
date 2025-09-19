@@ -11,13 +11,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install retry helper
+        run: |
+          cat > scripts/ci-retry.sh <<'BASH'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          max=${1:-5}; shift || true
+          sleepsec=${1:-2}; shift || true
+          try=0; code=""
+          while :; do
+            set +e
+            out=$("$@"); rc=$?
+            set -e
+            code="$out"
+            if [ $rc -eq 0 ] && [[ "$code" =~ ^2[0-9][0-9]$|^201$ ]]; then
+              echo "$code"; exit 0
+            fi
+            try=$((try+1))
+            if [ $try -ge $max ]; then
+              echo "RETRY_FAIL code=$code rc=$rc tries=$try" >&2
+              echo "$code"; exit 1
+            fi
+            echo "RETRY[$try/$max] code=$code rc=$rc; sleep $sleepsec ..." >&2
+            sleep "$sleepsec"
+          done
+          BASH
+          chmod +x scripts/ci-retry.sh
+
       - name: Health gates
         run: |
           set -e
           ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" https://wentian-clean.vercel.app/_models/health
           ./scripts/ci-retry.sh 5 2 curl -sS -o /dev/null -w "%{http_code}" https://wentian-clean.vercel.app/_r5/health
 
-      - name: Post release (/_r5/release or fallback /_r5/ping)
+      - name: Post release (/_r5/release → fallback /_r5/ping)
         env:
           BASE: https://wentian-clean.vercel.app
         run: |
@@ -25,11 +52,9 @@ jobs:
           TAG="rel-$(date +%Y%m%d-%H%M)"
           PAYLOAD="{\"baseline_tag\":\"base-20250917-001\",\"release_tag\":\"$TAG\",\"notes\":{\"from\":\"gha-auto\"}}"
 
-          # 先試 /_r5/release（重試）
           code=$(./scripts/ci-retry.sh 3 2 curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
                 -H 'content-type: application/json' -d "$PAYLOAD" "$BASE/_r5/release" || true)
 
-          # 不為 2xx → fallback /_r5/ping（重試）
           if ! [[ "$code" =~ ^2[0-9][0-9]$ ]]; then
             code=$(./scripts/ci-retry.sh 5 2 curl -sS -o /tmp/release.json -w "%{http_code}" -X POST \
                   -H 'content-type: application/json' -d "$PAYLOAD" "$BASE/_r5/ping")
