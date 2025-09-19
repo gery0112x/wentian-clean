@@ -1,0 +1,23 @@
+name: r5-sql-migrate
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: 'SQL file path (in repo)'
+        required: true
+        default: 'supabase/migrations/20250915_gov_coldstore.sql'
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run SQL
+        env:
+          DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          FILE: ${{ github.event.inputs.path }}
+        run: |
+          echo "Running $FILE against Supabase…"
+          psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$FILE"
