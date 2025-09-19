@@ -1,4 +1,5 @@
 name: r5-workflow-audit
+
 on:
   workflow_dispatch: {}
   push:
@@ -11,9 +12,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 安裝 actionlint（官方腳本，鎖定已發佈版本）
+      # 下載並安裝 actionlint（官方腳本，鎖版本）
       - name: Install actionlint
         run: |
+          set -e
           curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
             | bash -s -- -b /usr/local/bin v1.6.27
           actionlint --version
@@ -26,16 +28,16 @@ jobs:
           pip install --quiet yamllint
           yamllint -d "{extends: default, rules: {line-length: disable}}" .github/workflows
 
-      - name: Custom quick check (steps / dash)
+      # 追加：簡單檢查 steps 下是否有 '-' 項目
+      - name: Quick check (steps must have dash)
         run: |
           fail=0
           for f in .github/workflows/*.yml; do
             echo "-- $f"
-            # 粗檢：steps 區塊之後第一個子項是否以 '-' 開始
             awk '
               $0 ~ /^steps:/ {insteps=1; next}
               insteps && $0 ~ /^[[:space:]]*-[[:space:]]/ {insteps=0; ok=1}
-              END { if (insteps==1) print "WARN: steps without item dash (-)"; }
+              END { if (insteps==1) { print "WARN: steps without item dash (-)"; exit 1 } }
             ' "$f" || fail=1
           done
           exit $fail
