@@ -1,0 +1,24 @@
+name: r5-workflow-audit
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/*.yml"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: actionlint (GitHub Actions Linter)
+        uses: rhysd/actionlint@v1
+
+      - name: yamllint (syntax)
+        run: |
+          pip install --quiet yamllint
+          yamllint -d "{extends: default, rules: {line-length: disable}}" .github/workflows
+
+      - name: custom doctor (steps indent & secrets reference)
+        run: |
+          bash scripts/workflow-doctor.sh
