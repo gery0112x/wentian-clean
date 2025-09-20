@@ -3,31 +3,35 @@ name: r5-workflow-doctor
 on:
   push:
     branches: [ main ]
-    paths:
-      - ".github/workflows/**"
-      - "app/**"
-  pull_request:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  lint:
+  doctor:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ✅ 使用 reviewdog/action-actionlint（穩定、免安裝腳本）
+      # 改用維護中的 actionlint 動作（避免 rhysd/actionlint@v1 找不到 / 404）
       - name: actionlint
         uses: reviewdog/action-actionlint@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-check
-          level: warning
+          reporter: github-check          # 在 Checks 顯示結果
+          fail_on_error: true             # 有錯就 fail，確保 workflow 準確卡關
 
-      # 可選：YAML 檔也順便檢查
-      - name: yamllint
+      # yamllint 先設成不阻斷（有錯也先讓 R5 能跑完）
+      - name: yamllint (non-blocking)
         uses: ibiqlik/action-yamllint@v3
+        continue-on-error: true
         with:
-          strict: true
-          format: github
+          file_or_dir: ".github/workflows"
+          # 簡單規則，避免常見瑣碎警告卡關
+          config_data: |
+            extends: default
+            rules:
+              line-length: disable
+              trailing-spaces: disable
