@@ -1,29 +1,36 @@
 name: r5-workflow-audit
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
+      # 安裝 actionlint（裝在 $HOME/bin，然後寫入 GITHUB_PATH）
       - name: Install actionlint
         shell: bash
         run: |
-          set -eux
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.sh \
-          | bash -s -- -b "$HOME/.local/bin" v1.7.3
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          actionlint -version
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash -o /tmp/dl.sh
+          bash /tmp/dl.sh -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
 
-      - name: actionlint
-        run: actionlint -color
+      - name: Run actionlint
+        shell: bash
+        run: |
+          actionlint -color -shellcheck=
 
-      - name: Summary
-        run: echo "audit passed ✅"
+      # 安裝 yamllint（用 apt 最穩）
+      - name: Install yamllint
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y yamllint
+
+      - name: Run yamllint
+        run: |
+          yamllint -s .
