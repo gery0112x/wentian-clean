@@ -3,10 +3,9 @@ name: r5-workflow-doctor
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
     paths:
       - ".github/workflows/**"
-      - ".github/workflows/r5-workflow-doctor.yml"
 
 jobs:
   doctor:
@@ -16,38 +15,31 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # --- Install fixed actionlint binary (v1.7.1) ---
+      # 安裝 actionlint 到 $HOME/.local/bin 並加入 PATH（避免 /usr/bin 權限問題）
       - name: Install actionlint
         shell: bash
         run: |
-          set -euo pipefail
-          ver="1.7.1"
-          url="https://github.com/rhysd/actionlint/releases/download/v${ver}/actionlint_${ver}_linux_amd64.tar.gz"
-          curl -fsSL "$url" -o /tmp/actionlint.tgz
-          sudo tar -C /usr/local/bin -xzf /tmp/actionlint.tgz actionlint
+          set -eux
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.sh \
+          | bash -s -- -b "$HOME/.local/bin" v1.7.3
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           actionlint -version
 
-      # --- Install yamllint (pin 1.35.1) ---
+      # yamllint（可留可拿掉）
       - name: Install yamllint
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install "yamllint==1.35.1"
+          pip install yamllint
           yamllint --version
 
-      - name: Lint workflows with actionlint
+      - name: Lint GitHub Workflows (actionlint)
         run: |
-          actionlint -color -shellcheck= -format=github
+          actionlint -color
 
-      - name: Lint YAML files with yamllint
+      - name: Lint YAML (yamllint)
         run: |
-          yamllint -c <(cat <<'YAML'
-          extends: default
-          rules:
-            line-length: disable
-            truthy: disable
-          YAML
-          ) \
-          .github/workflows
+          yamllint -s .github/workflows
 
-      - name: Diagnosis summary
-        run: echo "Doctor OK ✅"
+      - name: Done
+        run: echo "doctor passed ✅"
