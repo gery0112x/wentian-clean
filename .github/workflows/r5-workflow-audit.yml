@@ -2,39 +2,39 @@ name: r5-workflow-audit
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+    # 只在修改工作流程/設定時才跑，避免 PR 都被拖慢
     paths:
-      - ".github/workflows/**/*.yml"
-      - ".github/workflows/**/*.yaml"
-  push:
-    branches: [ "main" ]
-    paths:
-      - ".github/workflows/**/*.yml"
-      - ".github/workflows/**/*.yaml"
-  workflow_dispatch:
+      - ".github/workflows/**"
+      - ".yamllint.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
-  contents: read
+  contents: read  # 夠了
 
 jobs:
   lint:
-    name: Lint Workflows
+    name: lint
     runs-on: ubuntu-latest
-    # 在 push(main) 上不阻斷，把錯誤當警告；在 PR 上會用真正的狀態檢查擋住
-    continue-on-error: ${{ github.event_name == 'push' }}
+    timeout-minutes: 10
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: actionlint
+      - name: actionlint (workflow 檔語法)
         uses: reviewdog/action-actionlint@v1
         with:
-          reporter: ${{ github.event_name == 'pull_request' && 'github-pr-check' || 'github-check' }}
-          filter_mode: nofilter
-          fail_on_error: ${{ github.event_name == 'pull_request' }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-check        # 在 PR 的 Checks 顯示
+          level: error
+          fail_on_error: true              # 有錯即紅
 
-      - name: yamllint
+      - name: yamllint (.yml 檔)
         uses: ibiqlik/action-yamllint@v3
         with:
-          file_or_dir: ".github/workflows"
-          format: github
-          strict: true
+          config_file: .yamllint.yml       # 若無此檔，會用預設規則
