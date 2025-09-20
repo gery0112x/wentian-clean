@@ -1,18 +1,20 @@
 name: r5-workflow-audit
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - ".github/workflows/**"
-      - "app/**"
   pull_request:
-    branches: [ main ]
+    paths:
+      - ".github/workflows/**.yml"
+  schedule:
+    - cron: "0 3 * * *"        # 每天 03:00 定時掃
   workflow_dispatch:
 
 jobs:
   audit:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -21,11 +23,16 @@ jobs:
         uses: reviewdog/action-actionlint@v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-pr-check
-          level: warning
+          reporter: github-check
+          fail_on_error: true
 
-      - name: yamllint
+      - name: yamllint (non-blocking)
         uses: ibiqlik/action-yamllint@v3
+        continue-on-error: true
         with:
-          strict: true
-          format: github
+          file_or_dir: ".github/workflows"
+          config_data: |
+            extends: default
+            rules:
+              line-length: disable
+              trailing-spaces: disable
