@@ -1,15 +1,15 @@
 name: r5-workflow-doctor
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
-  schedule:
-    - cron: "0 18 * * *"   # UTC 每日例行
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-workflow-doctor.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-workflow-doctor.yml"
 
 permissions:
   contents: read
@@ -17,24 +17,32 @@ permissions:
 jobs:
   doctor:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    env:
+      R5_BASE: ${{ secrets.R5_BASE }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 範例：R5 健檢 + 重試機制
       - name: R5 ping (with retry)
-        env:
-          R5_BASE: ${{ vars.R5_BASE }}          # 或 secrets / env，依你現況
-          R5_TOKEN: ${{ secrets.R5_TOKEN }}     # 如需權杖
+        shell: bash
         run: |
-          set -e
-          for i in 1 2 3; do
-            echo "Attempt $i..."
-            curl -fsS -X POST "$R5_BASE/_r5/ping" \
-              -H "Authorization: Bearer ${R5_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d '{}' && exit 0 || sleep 3
+          set -euo pipefail
+          if [ -z "${R5_BASE:-}" ]; then
+            echo "::error::R5_BASE is empty. Set repo secret R5_BASE to your endpoint (e.g. https://wentian-clean.vercel.app/api/r5)"
+            exit 1
+          fi
+          url="${R5_BASE%/}/ping"
+          echo "Pinging ${url/https:\/\//https://***}/ …"
+          for i in {1..3}; do
+            if curl -fsSL "$url" >/dev/null; then
+              echo "R5 ping OK"
+              exit 0
+            fi
+            echo "Retry $i/3…"
+            sleep 3
           done
-          echo "R5 ping failed after retries." >&2
+          echo "::error::R5 ping failed: $url"
           exit 1
+
+      # 你其它的檢查/腳本可以接在下面
