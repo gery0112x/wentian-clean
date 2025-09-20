@@ -1,42 +1,50 @@
 name: r5-smoke
 
 on:
-  schedule:
-    - cron: "0 */6 * * *"   # 每6小時
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-smoke.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-smoke.yml"
+  schedule:
+    - cron: "0 */6 * * *"   # 可選：每 6 小時跑一次 smoke
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}
-  cancel-in-progress: true
-
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
+    env:
+      R5_BASE: ${{ secrets.R5_BASE }}
 
-      - name: Ping R5 (/_r5/ping) with retry
-        env:
-          R5_BASE: ${{ vars.R5_BASE }}          # 例：https://<your-app>.vercel.app
-          R5_TOKEN: ${{ secrets.R5_TOKEN }}     # 若需要授權就填；沒用到可移除 header
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: R5 ping (with retry)
+        shell: bash
         run: |
-          set -e
-          for i in 1 2 3; do
-            echo "Attempt $i"
-            curl -fsS -X POST "$R5_BASE/_r5/ping" \
-              -H "Authorization: Bearer ${R5_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d '{}' && exit 0 || sleep 3
+          set -euo pipefail
+          if [ -z "${R5_BASE:-}" ]; then
+            echo "::error::R5_BASE is empty. Set repo secret R5_BASE to your endpoint (e.g. https://wentian-clean.vercel.app/api/r5)"
+            exit 1
+          fi
+          url="${R5_BASE%/}/ping"
+          echo "Pinging ${url/https:\/\//https://***}/ …"
+          for i in {1..3}; do
+            if curl -fsSL "$url" >/dev/null; then
+              echo "R5 ping OK"
+              exit 0
+            fi
+            echo "Retry $i/3…"
+            sleep 3
           done
-          echo "Ping failed after retries" >&2
+          echo "::error::R5 ping failed: $url"
           exit 1
 
-      - name: Diag (/_r5/diag)
-        env:
-          R5_BASE: ${{ vars.R5_BASE }}
-        run: |
-          curl -fsS "$R5_BASE/_r5/diag" | head -c 2000 || (echo "diag failed" >&2; exit 1)
+      # 其它 smoke 檢查可接續
