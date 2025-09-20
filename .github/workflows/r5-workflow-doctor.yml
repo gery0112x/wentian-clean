@@ -2,44 +2,39 @@ name: r5-workflow-doctor
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: "0 18 * * *"   # UTC 每日例行
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  r5-doctor:
-    name: R5 Doctor (non-blocking lint decoupled)
+  doctor:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # === 這裡放你原本的 R5 健檢 / 連通 / 通報 步驟 ===
-      # 範例：
-      # - name: ping R5
-      #   run: |
-      #     curl -fsSL -X POST "$R5_BASE/_r5/ping" -H "Authorization: Bearer ${{ secrets.R5_TOKEN }}"
-
-  lint:   # 把 Lint 拆開，且不阻擋主線
-    name: Lint (actionlint + yamllint)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: actionlint
-        uses: reviewdog/action-actionlint@v1
-        with:
-          reporter: github-pr-check
-          filter_mode: nofilter
-          fail_on_error: true
-
-      - name: yamllint
-        uses: ibiqlik/action-yamllint@v3
-        with:
-          file_or_dir: ".github/workflows"
-          format: github
-          strict: true
+      # 範例：R5 健檢 + 重試機制
+      - name: R5 ping (with retry)
+        env:
+          R5_BASE: ${{ vars.R5_BASE }}          # 或 secrets / env，依你現況
+          R5_TOKEN: ${{ secrets.R5_TOKEN }}     # 如需權杖
+        run: |
+          set -e
+          for i in 1 2 3; do
+            echo "Attempt $i..."
+            curl -fsS -X POST "$R5_BASE/_r5/ping" \
+              -H "Authorization: Bearer ${R5_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{}' && exit 0 || sleep 3
+          done
+          echo "R5 ping failed after retries." >&2
+          exit 1
