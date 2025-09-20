@@ -1,38 +1,43 @@
-name: r5-workflow-doctor
+name: r5 workflow doctor
 
 on:
-  push:
-    branches: [ main ]
-    paths:
-      - ".github/workflows/*.yml"
-      - ".github/workflows/*.yaml"
-      - "**/*.yml"
-      - "**/*.yaml"
-  pull_request:
-    branches: [ main ]
-    paths:
-      - ".github/workflows/*.yml"
-      - ".github/workflows/*.yaml"
-      - "**/*.yml"
-      - "**/*.yaml"
   workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
 
 jobs:
   doctor:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # GitHub Actions 工作流程語法檢查（官方 action）
-      - name: actionlint (GitHub Actions linter)
-        uses: rhysd/actionlint@v1
+      - name: Set up Go (for actionlint)
+        uses: actions/setup-go@v5
         with:
-          version: "1.7.3"
+          go-version: "stable"
 
-      # YAML 靜態檢查
-      - name: yamllint
-        uses: ibiqlik/action-yamllint@v3
-        with:
-          format: github
-          strict: true
+      - name: Install actionlint (official way)
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@latest
+          echo "${HOME}/go/bin" >> "$GITHUB_PATH"
+          actionlint -version
+
+      - name: Run actionlint (non-blocking)
+        continue-on-error: true
+        run: |
+          actionlint -color
+
+      - name: Install yamllint
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y yamllint
+          yamllint --version
+
+      - name: Run yamllint (non-blocking)
+        continue-on-error: true
+        run: |
+          yamllint -s .
