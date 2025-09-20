@@ -1,59 +1,48 @@
 name: r5-sql-migrate
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'supabase/migrations/**.sql'
   workflow_dispatch:
-    inputs:
-      path:
-        description: 'SQL 相對路徑（留空=自動偵測變更）'
-        required: false
-        default: ''
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-sql-migrate.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-sql-migrate.yml"
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   migrate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    env:
+      R5_BASE: ${{ secrets.R5_BASE }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Install psql
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Run SQL
-        env:
-          DB: ${{ secrets.SUPABASE_DB_URL }}
-          INPATH: ${{ github.event.inputs.path }}
+      - name: R5 ping (with retry)
+        shell: bash
         run: |
           set -euo pipefail
-
-          run_one () {
-            f="$1"
-            echo "==> applying $f"
-            psql "$DB" -v ON_ERROR_STOP=1 -f "$f"
-          }
-
-          if [ -n "$INPATH" ]; then
-            test -f "$INPATH" || { echo "file not found: $INPATH" >&2; exit 1; }
-            run_one "$INPATH"
-            exit 0
+          if [ -z "${R5_BASE:-}" ]; then
+            echo "::error::R5_BASE is empty. Set repo secret R5_BASE to your endpoint (e.g. https://wentian-clean.vercel.app/api/r5)"
+            exit 1
           fi
-
-          CHANGED=$(git diff --name-only HEAD~1 HEAD | grep -E '^supabase/migrations/.*\.sql$' || true)
-          if [ -z "$CHANGED" ]; then
-            echo "no changed sql under supabase/migrations"
-            exit 0
-          fi
-
-          echo "$CHANGED" | while read -r f; do
-            run_one "$f"
+          url="${R5_BASE%/}/ping"
+          echo "Pinging ${url/https:\/\//https://***}/ …"
+          for i in {1..3}; do
+            if curl -fsSL "$url" >/dev/null; then
+              echo "R5 ping OK"
+              exit 0
+            fi
+            echo "Retry $i/3…"
+            sleep 3
           done
+          echo "::error::R5 ping failed: $url"
+          exit 1
+
+      # 你的 migrate 步驟可以放在這之後
