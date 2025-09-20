@@ -1,36 +1,48 @@
 name: r5-release-on-green
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-release-on-green.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-release-on-green.yml"
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  release:
+  green:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-
-    # 只有從 PR 合併進 main 的 commit 會被允許（避免直接推壓過守門）
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'push' && github.event.head_commit.message != '')
+    env:
+      R5_BASE: ${{ secrets.R5_BASE }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Vercel Deploy (Production)
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: .
-          scope: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-args: '--prod'
+      - name: R5 ping (with retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${R5_BASE:-}" ]; then
+            echo "::error::R5_BASE is empty. Set repo secret R5_BASE to your endpoint (e.g. https://wentian-clean.vercel.app/api/r5)"
+            exit 1
+          fi
+          url="${R5_BASE%/}/ping"
+          echo "Pinging ${url/https:\/\//https://***}/ …"
+          for i in {1..3}; do
+            if curl -fsSL "$url" >/dev/null; then
+              echo "R5 ping OK"
+              exit 0
+            fi
+            echo "Retry $i/3…"
+            sleep 3
+          done
+          echo "::error::R5 ping failed: $url"
+          exit 1
+
+      # 你的 release 條件/步驟放這裡
