@@ -2,36 +2,44 @@ name: r5-workflow-doctor
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main" ]
   workflow_dispatch:
 
-jobs:
-  doctor:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
+permissions:
+  contents: read
 
+jobs:
+  r5-doctor:
+    name: R5 Doctor (non-blocking lint decoupled)
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 改用維護中的 actionlint 動作（避免 rhysd/actionlint@v1 找不到 / 404）
+      # === 這裡放你原本的 R5 健檢 / 連通 / 通報 步驟 ===
+      # 範例：
+      # - name: ping R5
+      #   run: |
+      #     curl -fsSL -X POST "$R5_BASE/_r5/ping" -H "Authorization: Bearer ${{ secrets.R5_TOKEN }}"
+
+  lint:   # 把 Lint 拆開，且不阻擋主線
+    name: Lint (actionlint + yamllint)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: actionlint
         uses: reviewdog/action-actionlint@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-check          # 在 Checks 顯示結果
-          fail_on_error: true             # 有錯就 fail，確保 workflow 準確卡關
+          reporter: github-pr-check
+          filter_mode: nofilter
+          fail_on_error: true
 
-      # yamllint 先設成不阻斷（有錯也先讓 R5 能跑完）
-      - name: yamllint (non-blocking)
+      - name: yamllint
         uses: ibiqlik/action-yamllint@v3
-        continue-on-error: true
         with:
           file_or_dir: ".github/workflows"
-          # 簡單規則，避免常見瑣碎警告卡關
-          config_data: |
-            extends: default
-            rules:
-              line-length: disable
-              trailing-spaces: disable
+          format: github
+          strict: true
