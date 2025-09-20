@@ -1,31 +1,42 @@
 name: r5-smoke
+
 on:
-  workflow_dispatch: {}
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 */6 * * *"   # 每6小時
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    env:
-      BASE: https://wentian-clean.vercel.app
+    timeout-minutes: 10
     steps:
-      - name: Ping /_models/health
-        run: |
-          set -e
-          test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_models/health)" = "200"
+      - uses: actions/checkout@v4
 
-      - name: Chat 2+2 via /_models/chat (no model to use server default)
+      - name: Ping R5 (/_r5/ping) with retry
+        env:
+          R5_BASE: ${{ vars.R5_BASE }}          # 例：https://<your-app>.vercel.app
+          R5_TOKEN: ${{ secrets.R5_TOKEN }}     # 若需要授權就填；沒用到可移除 header
         run: |
           set -e
-          payload='{"messages":[{"role":"user","content":"2+2"}]}'
-          code=$(curl -sS -o /tmp/chat.json -w "%{http_code}" -X POST \
-            -H "content-type: application/json" -d "$payload" "$BASE/_models/chat")
-          echo "code=$code"
-          cat /tmp/chat.json || true
-          [ "$code" -ge 200 ] && [ "$code" -lt 300 ]
+          for i in 1 2 3; do
+            echo "Attempt $i"
+            curl -fsS -X POST "$R5_BASE/_r5/ping" \
+              -H "Authorization: Bearer ${R5_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d '{}' && exit 0 || sleep 3
+          done
+          echo "Ping failed after retries" >&2
+          exit 1
 
-      - name: Ping /_r5/health
+      - name: Diag (/_r5/diag)
+        env:
+          R5_BASE: ${{ vars.R5_BASE }}
         run: |
-          set -e
-          test "$(curl -s -o /dev/null -w '%{http_code}' $BASE/_r5/health)" = "200"
+          curl -fsS "$R5_BASE/_r5/diag" | head -c 2000 || (echo "diag failed" >&2; exit 1)
