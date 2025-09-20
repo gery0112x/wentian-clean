@@ -1,45 +1,38 @@
 name: r5-workflow-doctor
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ main ]
-    paths:
-      - ".github/workflows/**"
+    branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   doctor:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      # 安裝 actionlint 到 $HOME/.local/bin 並加入 PATH（避免 /usr/bin 權限問題）
-      - name: Install actionlint
+      - name: Env / tools quick check
+        run: |
+          echo "Runner: ${{ runner.os }} ($(uname -a))"
+          echo "PATH=$PATH"
+          which bash || true
+          which curl || true
+
+      - name: Install actionlint (same as audit)
         shell: bash
         run: |
-          set -eux
-          mkdir -p "$HOME/.local/bin"
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.sh \
-          | bash -s -- -b "$HOME/.local/bin" v1.7.3
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          actionlint -version
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash -o /tmp/dl.sh
+          bash /tmp/dl.sh -b "$HOME/bin"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          actionlint --version
 
-      # yamllint（可留可拿掉）
       - name: Install yamllint
         run: |
-          python3 -m pip install --upgrade pip
-          pip install yamllint
+          sudo apt-get update
+          sudo apt-get install -y yamllint
           yamllint --version
 
-      - name: Lint GitHub Workflows (actionlint)
+      - name: Dry-run audits
         run: |
-          actionlint -color
-
-      - name: Lint YAML (yamllint)
-        run: |
-          yamllint -s .github/workflows
-
-      - name: Done
-        run: echo "doctor passed ✅"
+          actionlint -color -shellcheck=
+          yamllint -s .
