@@ -2,35 +2,39 @@ name: r5-workflow-audit
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
+    paths:
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
+      - "**/*.yml"
+      - "**/*.yaml"
   pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/*.yml"
+      - ".github/workflows/*.yaml"
+      - "**/*.yml"
+      - "**/*.yaml"
   workflow_dispatch:
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 安裝 actionlint（裝在 $HOME/bin，然後寫入 GITHUB_PATH）
-      - name: Install actionlint
-        shell: bash
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash -o /tmp/dl.sh
-          bash /tmp/dl.sh -b "$HOME/bin"
-          echo "$HOME/bin" >> "$GITHUB_PATH"
+      # GitHub Actions 工作流程語法檢查（官方 action）
+      - name: actionlint (GitHub Actions linter)
+        uses: rhysd/actionlint@v1
+        with:
+          # 可固定版本，避免上游突變
+          version: "1.7.3"
 
-      - name: Run actionlint
-        shell: bash
-        run: |
-          actionlint -color -shellcheck=
-
-      # 安裝 yamllint（用 apt 最穩）
-      - name: Install yamllint
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y yamllint
-
-      - name: Run yamllint
-        run: |
-          yamllint -s .
+      # YAML 靜態檢查
+      - name: yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          # 將輸出轉成 GitHub annotations；若有 .yamllint 會自動讀取
+          format: github
+          strict: true
