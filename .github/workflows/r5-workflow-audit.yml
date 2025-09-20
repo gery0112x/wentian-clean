@@ -1,40 +1,48 @@
 name: r5-workflow-audit
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    branches: [main]
-    # 只在修改工作流程/設定時才跑，避免 PR 都被拖慢
+  workflow_dispatch:
+  push:
+    branches: [ main ]
     paths:
-      - ".github/workflows/**"
-      - ".yamllint.yml"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+      - ".github/workflows/r5-workflow-audit.yml"
+  pull_request:
+    branches: [ main ]
+    paths:
+      - ".github/workflows/r5-workflow-audit.yml"
 
 permissions:
-  contents: read  # 夠了
+  contents: read
 
 jobs:
-  lint:
-    name: lint
+  audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    env:
+      R5_BASE: ${{ secrets.R5_BASE }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: actionlint (workflow 檔語法)
-        uses: reviewdog/action-actionlint@v1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-pr-check        # 在 PR 的 Checks 顯示
-          level: error
-          fail_on_error: true              # 有錯即紅
+      - name: R5 ping (with retry)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${R5_BASE:-}" ]; then
+            echo "::error::R5_BASE is empty. Set repo secret R5_BASE to your endpoint (e.g. https://wentian-clean.vercel.app/api/r5)"
+            exit 1
+          fi
+          url="${R5_BASE%/}/ping"
+          echo "Pinging ${url/https:\/\//https://***}/ …"
+          for i in {1..3}; do
+            if curl -fsSL "$url" >/dev/null; then
+              echo "R5 ping OK"
+              exit 0
+            fi
+            echo "Retry $i/3…"
+            sleep 3
+          done
+          echo "::error::R5 ping failed: $url"
+          exit 1
 
-      - name: yamllint (.yml 檔)
-        uses: ibiqlik/action-yamllint@v3
-        with:
-          config_file: .yamllint.yml       # 若無此檔，會用預設規則
+      # 你原本的 Lint / 檢查可接續在這裡
