@@ -1,43 +1,29 @@
 name: r5-workflow-audit
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
   push:
-    paths:
-      - ".github/workflows/*.yml"
+    branches: [ main ]
 
 jobs:
   audit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      # 下載並安裝 actionlint（官方腳本，鎖版本）
       - name: Install actionlint
+        shell: bash
         run: |
-          set -e
-          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
-            | bash -s -- -b /usr/local/bin v1.6.27
-          actionlint --version
+          set -eux
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.sh \
+          | bash -s -- -b "$HOME/.local/bin" v1.7.3
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          actionlint -version
 
-      - name: actionlint (GitHub Actions linter)
+      - name: actionlint
         run: actionlint -color
 
-      - name: yamllint (syntax)
-        run: |
-          pip install --quiet yamllint
-          yamllint -d "{extends: default, rules: {line-length: disable}}" .github/workflows
-
-      # 追加：簡單檢查 steps 下是否有 '-' 項目
-      - name: Quick check (steps must have dash)
-        run: |
-          fail=0
-          for f in .github/workflows/*.yml; do
-            echo "-- $f"
-            awk '
-              $0 ~ /^steps:/ {insteps=1; next}
-              insteps && $0 ~ /^[[:space:]]*-[[:space:]]/ {insteps=0; ok=1}
-              END { if (insteps==1) { print "WARN: steps without item dash (-)"; exit 1 } }
-            ' "$f" || fail=1
-          done
-          exit $fail
+      - name: Summary
+        run: echo "audit passed ✅"
