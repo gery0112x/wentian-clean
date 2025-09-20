@@ -3,18 +3,24 @@ name: r5-workflow-audit
 on:
   pull_request:
     paths:
-      - ".github/workflows/**.yml"
-  schedule:
-    - cron: "0 3 * * *"        # 每天 03:00 定時掃
+      - ".github/workflows/**/*.yml"
+      - ".github/workflows/**/*.yaml"
+  push:
+    branches: [ "main" ]
+    paths:
+      - ".github/workflows/**/*.yml"
+      - ".github/workflows/**/*.yaml"
   workflow_dispatch:
 
-jobs:
-  audit:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      checks: write
+permissions:
+  contents: read
 
+jobs:
+  lint:
+    name: Lint Workflows
+    runs-on: ubuntu-latest
+    # 在 push(main) 上不阻斷，把錯誤當警告；在 PR 上會用真正的狀態檢查擋住
+    continue-on-error: ${{ github.event_name == 'push' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,17 +28,13 @@ jobs:
       - name: actionlint
         uses: reviewdog/action-actionlint@v1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          reporter: github-check
-          fail_on_error: true
+          reporter: ${{ github.event_name == 'pull_request' && 'github-pr-check' || 'github-check' }}
+          filter_mode: nofilter
+          fail_on_error: ${{ github.event_name == 'pull_request' }}
 
-      - name: yamllint (non-blocking)
+      - name: yamllint
         uses: ibiqlik/action-yamllint@v3
-        continue-on-error: true
         with:
           file_or_dir: ".github/workflows"
-          config_data: |
-            extends: default
-            rules:
-              line-length: disable
-              trailing-spaces: disable
+          format: github
+          strict: true
