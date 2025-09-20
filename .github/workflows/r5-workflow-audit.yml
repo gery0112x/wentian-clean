@@ -1,43 +1,31 @@
-name: r5 workflow audit
+name: r5-workflow-audit
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
+    paths:
+      - ".github/workflows/**"
+      - "app/**"
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   audit:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go (for actionlint)
-        uses: actions/setup-go@v5
+      - name: actionlint
+        uses: reviewdog/action-actionlint@v1
         with:
-          go-version: "stable"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-pr-check
+          level: warning
 
-      - name: Install actionlint (official way)
-        run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@latest
-          echo "${HOME}/go/bin" >> "$GITHUB_PATH"
-          actionlint -version
-
-      - name: Run actionlint (non-blocking)
-        continue-on-error: true
-        run: |
-          actionlint -color
-
-      - name: Install yamllint
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y yamllint
-          yamllint --version
-
-      - name: Run yamllint (non-blocking)
-        continue-on-error: true
-        run: |
-          yamllint -s .
+      - name: yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          strict: true
+          format: github
