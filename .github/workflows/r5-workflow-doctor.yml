@@ -1,43 +1,33 @@
-name: r5 workflow doctor
+name: r5-workflow-doctor
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ main ]
+    paths:
+      - ".github/workflows/**"
+      - "app/**"
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
-  doctor:
+  lint:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go (for actionlint)
-        uses: actions/setup-go@v5
+      # ✅ 使用 reviewdog/action-actionlint（穩定、免安裝腳本）
+      - name: actionlint
+        uses: reviewdog/action-actionlint@v1
         with:
-          go-version: "stable"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          reporter: github-check
+          level: warning
 
-      - name: Install actionlint (official way)
-        run: |
-          go install github.com/rhysd/actionlint/cmd/actionlint@latest
-          echo "${HOME}/go/bin" >> "$GITHUB_PATH"
-          actionlint -version
-
-      - name: Run actionlint (non-blocking)
-        continue-on-error: true
-        run: |
-          actionlint -color
-
-      - name: Install yamllint
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y yamllint
-          yamllint --version
-
-      - name: Run yamllint (non-blocking)
-        continue-on-error: true
-        run: |
-          yamllint -s .
+      # 可選：YAML 檔也順便檢查
+      - name: yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          strict: true
+          format: github
