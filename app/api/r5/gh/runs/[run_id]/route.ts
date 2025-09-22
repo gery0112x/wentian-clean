@@ -1,36 +1,26 @@
-const { GH_OWNER, GH_REPO, GH_TOKEN } = process.env;
+import { NextRequest, NextResponse } from "next/server";
 
-function j(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
+const GH_OWNER = process.env.GH_OWNER!;
+const GH_REPO  = process.env.GH_REPO!;
+const GH_TOKEN = process.env.R5_ACTIONS_TOKEN || process.env.GH_TOKEN || "";
 
-export async function GET(_: Request, { params }: { params: { run_id: string } }) {
-  if (!GH_OWNER || !GH_REPO || !GH_TOKEN) {
-    return j(500, {
-      ok: false,
-      error: { code: "CFG_MISSING", msg: "GH_OWNER/GH_REPO/GH_TOKEN 未設定" },
-    });
-  }
-
-  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/runs/${encodeURIComponent(
-    params.run_id
-  )}`;
-
+export async function GET(_req: NextRequest, { params }: { params: { run_id: string } }) {
+  if (!GH_TOKEN) return NextResponse.json({ ok:false, error:"github_token_missing" }, { status:500 });
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/runs/${params.run_id}`;
   const r = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${GH_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", "User-Agent":"r5-gateway" },
+    cache: "no-store",
   });
-
-  if (r.ok) {
-    const data = await r.json();
-    return j(200, { ok: true, data });
-  }
-  const text = await r.text();
-  return j(r.status, { ok: false, error: { code: `GH_${r.status}`, msg: text } });
+  if (!r.ok) return NextResponse.json({ ok:false, error:"github_api_failed", status:r.status }, { status:502 });
+  const x = await r.json();
+  const data = {
+    id: x.id,
+    name: x.name,
+    status: x.status,              // queued / in_progress / completed
+    conclusion: x.conclusion,      // success / failure / cancelled / null
+    html_url: x.html_url,
+    created_at: x.created_at,
+    updated_at: x.updated_at,
+  };
+  return NextResponse.json({ ok: true, data });
 }
