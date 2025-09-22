@@ -1,21 +1,9 @@
-const { VERCEL_DEPLOY_HOOK } = process.env;
-
-function j(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
+// app/api/r5/vercel/deploy/route.ts
+import { NextResponse } from "next/server";
 
 export async function POST() {
-  if (!VERCEL_DEPLOY_HOOK) {
-    return j(500, {
-      ok: false,
-      error: { code: "CFG_MISSING", msg: "請設定 VERCEL_DEPLOY_HOOK（或改用 GitHub workflow 佈署）" },
-    });
-  }
-  const r = await fetch(VERCEL_DEPLOY_HOOK, { method: "POST" });
-  const text = await r.text();
-  if (!r.ok) return j(r.status, { ok: false, error: { code: `VERCEL_${r.status}`, msg: text } });
-  return j(200, { ok: true, data: { result: text } });
+  const hook = process.env.VERCEL_DEPLOY_HOOK!;
+  const r = await fetch(hook, { method: "POST" });
+  const txt = await r.text();
+  return NextResponse.json({ ok: r.ok, status: r.status, body: txt });
 }
