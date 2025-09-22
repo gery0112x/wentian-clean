@@ -1,0 +1,21 @@
+flowchart LR
+    A[ChatGPT/GPTs 請求] --> B[r5 Gateway /api/r5/start]
+
+    subgraph DB[Supabase public.r5_runs]
+      X[(insert: status=running, step_index=0, progress=0, goal, meta{op/ref/workflow_id})]
+      Y[(update: status/step_index/progress_percent ...)]
+    end
+    B --> X
+
+    %% Plan B-2: GitHub
+    B -->|op=gh_dispatch| C{{GitHub workflow_dispatch}}
+    C -->|204| D[GitHub Workflow Run]
+    D -->|poll or webhook| E[Sync Run Status]
+    E --> Y
+
+    %% Plan B: Vercel Hook
+    B -->|op=vercel_deploy| V{{Vercel Deploy Hook}}
+    V -->|202/200| Y
+
+    %% 查進度
+    F[/GET /api/r5/runs/{id}/] --> Y
