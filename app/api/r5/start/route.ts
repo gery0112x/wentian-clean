@@ -1,5 +1,6 @@
 // app/api/r5/start/route.ts
 import { NextRequest, NextResponse } from "next/server";
+import { ensureBaselineOk } from "../../../lib/r5/baseline";
 
 function j(status: number, body: unknown) {
   return NextResponse.json(body, { status });
@@ -43,12 +44,18 @@ async function sb(method: string, path: string, body?: any) {
 
 export async function POST(req: NextRequest) {
   try {
+    // ===== Baseline Gate（強制 4 檔檢查）=====
+    const base = await ensureBaselineOk();
+    if (!base.ok) {
+      return j(503, { ok: false, error: "baseline_blocked", details: base });
+    }
+
     const { op, goal, workflow_id, ref = "main" } = await req.json();
 
     if (!op) return j(400, { ok: false, error: "op_required" });
     if (!goal) return j(400, { ok: false, error: "goal_required" });
 
-    // 建立 DB 紀錄（先入庫，前端可拿到 id）
+    // 建立 DB 紀錄
     const [row] = await sb("POST", "r5_runs", [{
       goal,
       status: "running",
@@ -72,7 +79,6 @@ export async function POST(req: NextRequest) {
         await sb("PATCH", `r5_runs?id=eq.${id}`, [{ status: "failed", progress_percent: 100 }]);
         return j(502, { ok: false, id, error: "vercel_deploy_failed", status: r.status });
       }
-      // 視你的流程：若希望 deploy 即視為完成，直接結案
       await sb("PATCH", `r5_runs?id=eq.${id}`, [{
         status: "completed",
         step_index: 1,
