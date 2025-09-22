@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const GH_OWNER = process.env.GH_OWNER!;
-const GH_REPO  = process.env.GH_REPO!;
+const GH_OWNER = process.env.GH_OWNER || "";
+const GH_REPO  = process.env.GH_REPO  || "";
 const GH_TOKEN = process.env.R5_ACTIONS_TOKEN || process.env.GH_TOKEN || "";
 
 export async function GET(_req: NextRequest, { params }: { params: { run_id: string } }) {
@@ -15,9 +15,8 @@ export async function GET(_req: NextRequest, { params }: { params: { run_id: str
   const x = await r.json();
   const data = {
     id: x.id,
-    name: x.name,
-    status: x.status,              // queued / in_progress / completed
-    conclusion: x.conclusion,      // success / failure / cancelled / null
+    status: x.status,
+    conclusion: x.conclusion,
     html_url: x.html_url,
     created_at: x.created_at,
     updated_at: x.updated_at,
