@@ -1,0 +1,36 @@
+{
+  "version": "r5-pipeline.v2.2.1",
+  "nodes": [
+    { "id": "start",        "kind": "api",    "path": "/api/r5/start" },
+    { "id": "db.insert",    "kind": "db",     "table": "public.r5_runs" },
+    { "id": "gh.dispatch",  "kind": "github", "api": "/actions/workflows/{workflow_id}/dispatches" },
+    { "id": "gh.run",       "kind": "github", "api": "/actions/runs/{run_id}" },
+    { "id": "vercel.hook",  "kind": "vercel", "api": "Deploy Hook URL" },
+    { "id": "progress.read","kind": "api",    "path": "/api/r5/runs/{id}" }
+  ],
+  "edges": [
+    ["start","db.insert"],
+    ["start","gh.dispatch"],
+    ["gh.dispatch","gh.run"],
+    ["gh.run","db.insert"],
+    ["start","vercel.hook"],
+    ["vercel.hook","db.insert"],
+    ["progress.read","db.insert"]
+  ],
+  "acceptance": {
+    "A1_health": [
+      "GET /api/r5/ping == 200 JSON",
+      "GET /api/r5/health == 200 JSON"
+    ],
+    "A2_db_schema": [
+      "r5_runs has {status,step_index,progress_percent,total_steps,meta,goal}"
+    ],
+    "A3_dispatch": [
+      "POST start(op=gh_dispatch) -> 200 & GH 204",
+      "runs/{id} reflects queued/in_progress/completed"
+    ],
+    "A4_vercel": [
+      "POST vercel/deploy -> 200/202 triggers deployment"
+    ]
+  }
+}
