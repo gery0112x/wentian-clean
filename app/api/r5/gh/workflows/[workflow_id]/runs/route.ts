@@ -1,44 +1,26 @@
-import { NextRequest } from "next/server";
-const { GH_OWNER, GH_REPO, GH_TOKEN } = process.env;
+import { NextRequest, NextResponse } from "next/server";
 
-function j(status: number, body: unknown) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
+const GH_OWNER = process.env.GH_OWNER!;
+const GH_REPO  = process.env.GH_REPO!;
+const GH_TOKEN = process.env.R5_ACTIONS_TOKEN || process.env.GH_TOKEN || "";
 
-export async function GET(
-  req: NextRequest,
-  { params }: { params: { workflow_id: string } }
-) {
-  if (!GH_OWNER || !GH_REPO || !GH_TOKEN) {
-    return j(500, {
-      ok: false,
-      error: { code: "CFG_MISSING", msg: "GH_OWNER/GH_REPO/GH_TOKEN 未設定" },
-    });
-  }
-
-  const { searchParams } = new URL(req.url);
-  const per_page = Number(searchParams.get("per_page") || 10);
-  const page = Number(searchParams.get("page") || 1);
-
-  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${encodeURIComponent(
-    params.workflow_id
-  )}/runs?per_page=${per_page}&page=${page}`;
-
+export async function GET(req: NextRequest, { params }: { params: { workflow_id: string } }) {
+  if (!GH_TOKEN) return NextResponse.json({ ok:false, error:"github_token_missing" }, { status:500 });
+  const limit = Math.max(1, Math.min(20, Number(new URL(req.url).searchParams.get("limit") || 5)));
+  const url = `https://api.github.com/repos/${GH_OWNER}/${GH_REPO}/actions/workflows/${encodeURIComponent(params.workflow_id)}/runs?per_page=${limit}`;
   const r = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${GH_TOKEN}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-    },
+    headers: { Authorization: `Bearer ${GH_TOKEN}`, Accept: "application/vnd.github+json", "User-Agent":"r5-gateway" },
+    cache: "no-store",
   });
-
-  if (r.ok) {
-    const data = await r.json();
-    return j(200, { ok: true, data });
-  }
-  const text = await r.text();
-  return j(r.status, { ok: false, error: { code: `GH_${r.status}`, msg: text } });
+  if (!r.ok) return NextResponse.json({ ok:false, error:"github_api_failed", status:r.status }, { status:502 });
+  const js = await r.json();
+  const runs = (js?.workflow_runs || []).map((x: any) => ({
+    id: x.id,
+    status: x.status,              // queued / in_progress / completed
+    conclusion: x.conclusion,      // success / failure / cancelled / null
+    html_url: x.html_url,
+    created_at: x.created_at,
+    updated_at: x.updated_at,
+  }));
+  return NextResponse.json({ ok: true, total: runs.length, runs });
 }
