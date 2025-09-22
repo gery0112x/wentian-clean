@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const GH_OWNER = process.env.GH_OWNER!;
-const GH_REPO  = process.env.GH_REPO!;
+const GH_OWNER = process.env.GH_OWNER || "";
+const GH_REPO  = process.env.GH_REPO  || "";
 const GH_TOKEN = process.env.R5_ACTIONS_TOKEN || process.env.GH_TOKEN || "";
 
 export async function GET(req: NextRequest, { params }: { params: { workflow_id: string } }) {
@@ -16,8 +16,8 @@ export async function GET(req: NextRequest, { params }: { params: { workflow_id:
   const js = await r.json();
   const runs = (js?.workflow_runs || []).map((x: any) => ({
     id: x.id,
-    status: x.status,              // queued / in_progress / completed
-    conclusion: x.conclusion,      // success / failure / cancelled / null
+    status: x.status,
+    conclusion: x.conclusion,
     html_url: x.html_url,
     created_at: x.created_at,
     updated_at: x.updated_at,
